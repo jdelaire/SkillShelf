@@ -3,10 +3,18 @@ import Foundation
 public struct PathExpectation: Sendable, Hashable {
     public let path: String
     public let linkDestination: String?
+    public let fileNumber: UInt64?
 
-    public init(path: String, linkDestination: String?) {
+    public init(path: String, linkDestination: String?, fileNumber: UInt64? = nil) {
         self.path = path
         self.linkDestination = linkDestination
+        self.fileNumber = fileNumber
+    }
+
+    static func folder(_ path: String) -> PathExpectation {
+        let attributes = try? FileManager.default.attributesOfItem(atPath: path)
+        let number = (attributes?[.systemFileNumber] as? NSNumber)?.uint64Value
+        return PathExpectation(path: path, linkDestination: nil, fileNumber: number)
     }
 }
 
@@ -46,32 +54,46 @@ public enum DeletePlanner {
     }
 
     public static func plan(for entry: SkillEntry, in snapshot: Snapshot, layout: Layout) -> Result {
-        if entry.isSymlink {
-            return .options(linkOptions(entry, snapshot, layout))
-        }
-        switch entry.protection {
+        switch entry.root.kind {
         case .builtIn:
             return .blocked("Built into the harness. It cannot be deleted here.")
         case .managed:
             return .blocked("Claude re-downloads this skill. Turn it off on claude.ai instead.")
+        case .plugin:
+            return pluginResult(entry.root.plugin, snapshot)
+        case .user:
+            break
+        }
+        if entry.isSymlink {
+            return .options(linkOptions(entry, snapshot, layout))
+        }
+        switch entry.protection {
+        case .builtIn, .managed:
+            return .blocked("This folder belongs to the harness. It cannot be deleted here.")
         case .plugin(let plugin):
-            guard plugin.removable else {
-                return .blocked("Part of a plugin bundled with \(plugin.owner.displayName). It cannot be uninstalled here.")
-            }
-            return .options([uninstallOption(plugin, snapshot, layout)])
+            return pluginResult(plugin, snapshot)
         case .none:
-            guard let resolved = entry.resolvedPath else { return .blocked("Missing folder.") }
-            let links = incomingLinks(to: resolved, snapshot)
+            guard Paths.canonical(entry.entryPath) == entry.entryPath else {
+                let real = entry.resolvedPath.map(layout.display) ?? "another folder"
+                return .blocked("This skills folder is itself a link to \(real). Delete the skill there.")
+            }
+            let links = incomingLinks(to: entry.entryPath, snapshot)
             let detail = links.isEmpty
                 ? "Moves the folder to the Trash."
                 : "Moves the folder and \(links.count) link\(links.count == 1 ? "" : "s") to it to the Trash."
             return .options([DeleteOption(
                 title: "Delete everywhere",
                 detail: detail,
-                action: .trash(items: links + [PathExpectation(path: entry.entryPath, linkDestination: nil)],
-                               lockKey: lockKey(for: entry.entryPath, layout))
+                action: .trash(items: links + [.folder(entry.entryPath)], lockKey: lockKey(for: entry.entryPath, layout))
             )])
         }
+    }
+
+    static func pluginResult(_ plugin: PluginRef?, _ snapshot: Snapshot) -> Result {
+        guard let plugin, plugin.removable else {
+            return .blocked("Part of a plugin bundled with its harness. It cannot be uninstalled here.")
+        }
+        return .options([uninstallOption(plugin, snapshot)])
     }
 
     static func linkOptions(_ entry: SkillEntry, _ snapshot: Snapshot, _ layout: Layout) -> [DeleteOption] {
@@ -83,12 +105,11 @@ public enum DeletePlanner {
         )]
         guard let resolved = entry.resolvedPath, entry.protection == .none else { return options }
         let links = incomingLinks(to: resolved, snapshot)
-        if let owner = userRootEntry(at: resolved, snapshot) {
+        if let owner = userRootFolder(at: resolved, snapshot) {
             options.append(DeleteOption(
                 title: "Delete everywhere",
                 detail: "Moves the folder and every link to it to the Trash.",
-                action: .trash(items: links + [PathExpectation(path: owner.entryPath, linkDestination: nil)],
-                               lockKey: lockKey(for: owner.entryPath, layout))
+                action: .trash(items: links + [.folder(owner.entryPath)], lockKey: lockKey(for: owner.entryPath, layout))
             ))
         } else if links.count > 1 {
             options.append(DeleteOption(
@@ -100,8 +121,8 @@ public enum DeletePlanner {
         return options
     }
 
-    static func uninstallOption(_ plugin: PluginRef, _ snapshot: Snapshot, _ layout: Layout) -> DeleteOption {
-        let skills = snapshot.entries.filter { $0.protection == .plugin(plugin) && !$0.isSymlink }.map { $0.name }
+    static func uninstallOption(_ plugin: PluginRef, _ snapshot: Snapshot) -> DeleteOption {
+        let skills = snapshot.entries.filter { $0.root.plugin == plugin }.map(\.name)
         let tool: String
         let arguments: [String]
         switch plugin.owner {
@@ -122,12 +143,14 @@ public enum DeletePlanner {
 
     static func incomingLinks(to resolved: String, _ snapshot: Snapshot) -> [PathExpectation] {
         snapshot.entries
-            .filter { $0.isSymlink && $0.resolvedPath == resolved }
+            .filter { $0.root.kind == .user && $0.isSymlink && $0.resolvedPath == resolved }
             .map { PathExpectation(path: $0.entryPath, linkDestination: $0.linkDestination) }
     }
 
-    static func userRootEntry(at resolved: String, _ snapshot: Snapshot) -> SkillEntry? {
-        snapshot.entries.first { !$0.isSymlink && $0.root.kind == .user && $0.entryPath == resolved }
+    static func userRootFolder(at resolved: String, _ snapshot: Snapshot) -> SkillEntry? {
+        snapshot.entries.first {
+            !$0.isSymlink && $0.root.kind == .user && $0.entryPath == resolved && Paths.canonical($0.entryPath) == $0.entryPath
+        }
     }
 
     static func lockKey(for path: String, _ layout: Layout) -> String? {
@@ -145,6 +168,7 @@ public struct PushStep: Sendable, Hashable, Identifiable {
 
     public let harness: HarnessID
     public let outcome: Outcome
+    public let target: String
 
     public var id: HarnessID { harness }
 }
@@ -155,35 +179,66 @@ public enum PushPlanner {
         case steps([PushStep])
     }
 
+    enum Found {
+        case none, match, other(String)
+    }
+
     public static func plan(for entry: SkillEntry, in snapshot: Snapshot, layout: Layout) -> Result {
         guard let target = entry.resolvedPath else { return .blocked("This link is broken.") }
-        guard entry.protection == .none else {
+        guard entry.root.kind == .user, entry.protection == .none else {
             return .blocked("Built-in, managed and plugin skills belong to their harness and cannot be pushed.")
         }
         let name = (target as NSString).lastPathComponent
-        var present: [String: [String: String?]] = [:]
-        for item in snapshot.entries {
-            present[item.root.path, default: [:]][item.folderName] = .some(item.resolvedPath)
-        }
+        var planned = Set<String>()
         var steps: [PushStep] = []
         for harness in snapshot.harnesses {
             let roots = (snapshot.harnessRoots[harness] ?? []).filter { !$0.thirdParty }.map(\.root.path)
-            let found = roots.compactMap { root in present[root]?[name].map { (root: root, resolved: $0) } }
-            if let match = found.first(where: { $0.resolved == target }) {
-                steps.append(PushStep(harness: harness, outcome: .present(via: layout.display(match.root))))
-            } else if let clash = found.first {
-                let reason = clash.resolved == nil
-                    ? "A broken link named \(name) is already in \(layout.display(clash.root))."
-                    : "A different \(name) is already in \(layout.display(clash.root))."
-                steps.append(PushStep(harness: harness, outcome: .conflict(reason)))
+            var matchRoot: String?
+            var clash: String?
+            for root in roots {
+                switch inspect(root: root, name: name, target: target, planned: planned) {
+                case .none: break
+                case .match: matchRoot = matchRoot ?? root
+                case .other(let reason): clash = clash ?? "\(reason) in \(layout.display(root))."
+                }
+            }
+            let outcome: PushStep.Outcome
+            if let clash {
+                outcome = .conflict(clash)
+            } else if let matchRoot {
+                outcome = .present(via: layout.display(matchRoot))
             } else {
                 let pushRoot = layout.pushRoot(for: harness)
-                let base = Paths.canonical(pushRoot) ?? pushRoot
-                let destination = Paths.relative(from: base, to: target)
-                steps.append(PushStep(harness: harness, outcome: .link(path: pushRoot + "/" + name, destination: destination)))
-                present[pushRoot, default: [:]][name] = .some(target)
+                let physicalRoot = physical(pushRoot)
+                outcome = .link(path: pushRoot + "/" + name, destination: Paths.relative(from: physicalRoot, to: target))
+                planned.insert(physicalRoot + "/" + name)
             }
+            steps.append(PushStep(harness: harness, outcome: outcome, target: target))
         }
         return .steps(steps)
+    }
+
+    static func inspect(root: String, name: String, target: String, planned: Set<String>) -> Found {
+        let path = root + "/" + name
+        if planned.contains(physical(root) + "/" + name) { return .match }
+        let files = FileManager.default
+        let isLink = (try? files.destinationOfSymbolicLink(atPath: path)) != nil
+        guard isLink || files.fileExists(atPath: path) else { return .none }
+        guard let resolved = Paths.canonical(path) else { return .other("A broken link named \(name) is already") }
+        guard resolved == target, files.fileExists(atPath: target + "/SKILL.md") else {
+            return .other("A different \(name) is already")
+        }
+        return .match
+    }
+
+    static func physical(_ path: String) -> String {
+        var existing = path
+        var missing: [String] = []
+        while Paths.canonical(existing) == nil, existing != "/", !existing.isEmpty {
+            missing.insert((existing as NSString).lastPathComponent, at: 0)
+            existing = (existing as NSString).deletingLastPathComponent
+        }
+        let base = Paths.canonical(existing) ?? existing
+        return ([base] + missing).joined(separator: "/")
     }
 }

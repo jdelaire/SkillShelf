@@ -77,6 +77,16 @@ final class AppModel {
         snapshot = result
         isScanning = false
         if let selection, snapshot.entry(id: selection) == nil { self.selection = nil }
+        if let request = deleteRequest {
+            deleteRequest = snapshot.entry(id: request.entry.id).map {
+                DeleteRequest(entry: $0, result: DeletePlanner.plan(for: $0, in: snapshot, layout: layout))
+            }
+        }
+        if let request = pushRequest {
+            pushRequest = snapshot.entry(id: request.entry.id).map {
+                PushRequest(entry: $0, result: PushPlanner.plan(for: $0, in: snapshot, layout: layout))
+            }
+        }
     }
 
     func requestDelete(_ entry: SkillEntry) {

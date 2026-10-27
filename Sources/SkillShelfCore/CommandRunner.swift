@@ -47,7 +47,7 @@ public actor LoginShellRunner: CommandRunning {
     private func resolvedPath() async throws -> String {
         if let loginPath { return loginPath }
         let result = try await Self.launch(
-            "/bin/zsh", ["-lc", "print -r -- $PATH"], ProcessInfo.processInfo.environment, home, timeout
+            "/bin/zsh", ["-lc", "print -r -- $PATH"], ProcessInfo.processInfo.environment, home, .seconds(30)
         )
         let path = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
         loginPath = path
@@ -57,6 +57,33 @@ public actor LoginShellRunner: CommandRunning {
     private final class Box: @unchecked Sendable {
         let process = Process()
         var timedOut = false
+    }
+
+    private final class Collector: @unchecked Sendable {
+        private let lock = NSLock()
+        private var data = Data()
+        private var ended = false
+
+        init(_ handle: FileHandle) {
+            handle.readabilityHandler = { [self] handle in
+                let chunk = handle.availableData
+                lock.withLock {
+                    if chunk.isEmpty {
+                        ended = true
+                        handle.readabilityHandler = nil
+                    } else {
+                        data.append(chunk)
+                    }
+                }
+            }
+        }
+
+        var isEnded: Bool { lock.withLock { ended } }
+
+        func finish(_ handle: FileHandle) -> Data {
+            handle.readabilityHandler = nil
+            return lock.withLock { data }
+        }
     }
 
     @concurrent
@@ -83,26 +110,28 @@ public actor LoginShellRunner: CommandRunning {
             continuation.yield(finished.terminationStatus)
             continuation.finish()
         }
-        try process.run()
         let outHandle = out.fileHandleForReading
         let errHandle = err.fileHandleForReading
-        async let outData = readAll(outHandle)
-        async let errData = readAll(errHandle)
+        let outCollector = Collector(outHandle)
+        let errCollector = Collector(errHandle)
+        try process.run()
+        let pid = process.processIdentifier
         let watchdog = Task {
             try await Task.sleep(for: timeout)
             box.timedOut = true
             box.process.terminate()
+            try await Task.sleep(for: .seconds(2))
+            kill(pid, SIGKILL)
         }
         var status: Int32 = -1
         for await code in exits { status = code }
         watchdog.cancel()
-        let output = String(decoding: await outData, as: UTF8.self)
-        let error = String(decoding: await errData, as: UTF8.self)
+        let drainDeadline = ContinuousClock.now + .seconds(2)
+        while !(outCollector.isEnded && errCollector.isEnded), ContinuousClock.now < drainDeadline {
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+        let output = String(decoding: outCollector.finish(outHandle), as: UTF8.self)
+        let error = String(decoding: errCollector.finish(errHandle), as: UTF8.self)
         return (status, output, error, box.timedOut)
-    }
-
-    @concurrent
-    private static func readAll(_ handle: FileHandle) async -> Data {
-        handle.readDataToEndOfFile()
     }
 }

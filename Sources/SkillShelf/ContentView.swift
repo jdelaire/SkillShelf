@@ -30,7 +30,6 @@ struct ContentView: View {
                 ContentUnavailableView("No skill selected", systemImage: "sparkles")
             }
         }
-        .searchable(text: $model.search, placement: .toolbar, prompt: "Search skills")
         .toolbar {
             ToolbarItemGroup {
                 Button {
@@ -41,6 +40,8 @@ struct ContentView: View {
                 .help("Refresh (⌘R)")
                 .disabled(model.isScanning)
                 SkillActions(entry: model.selectedRow?.entry)
+                SearchField(text: $model.search, prompt: "Search skills")
+                    .frame(width: 220)
             }
         }
         .sheet(item: $model.deleteRequest) { DeleteSheet(request: $0) }

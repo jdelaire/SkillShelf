@@ -27,6 +27,7 @@ public actor Mutator {
             for item in items { try Self.verify(item) }
             let ordered = items.filter { $0.linkDestination != nil } + items.filter { $0.linkDestination == nil }
             for item in ordered {
+                try Self.verify(item)
                 try FileManager.default.trashItem(at: URL(fileURLWithPath: item.path), resultingItemURL: nil)
             }
             if let lockKey { try removeLockEntry(lockKey) }
@@ -40,19 +41,34 @@ public actor Mutator {
     }
 
     public func perform(_ steps: [PushStep]) throws -> Int {
-        let files = FileManager.default
-        var created = 0
-        for step in steps {
-            guard case .link(let path, let destination) = step.outcome else { continue }
-            if files.fileExists(atPath: path) || (try? files.destinationOfSymbolicLink(atPath: path)) != nil {
-                throw MutationError.changed(layout.display(path))
-            }
-            let parent = (path as NSString).deletingLastPathComponent
-            try files.createDirectory(atPath: parent, withIntermediateDirectories: true)
-            try files.createSymbolicLink(atPath: path, withDestinationPath: destination)
-            created += 1
+        try Self.preflightAndLink(steps)
+    }
+
+    static func preflightAndLink(_ steps: [PushStep]) throws -> Int {
+        let links = steps.compactMap { step -> (path: String, destination: String, target: String)? in
+            guard case .link(let path, let destination) = step.outcome else { return nil }
+            return (path, destination, step.target)
         }
-        return created
+        for link in links { try Self.preflight(link.path, target: link.target) }
+        let files = FileManager.default
+        for link in links {
+            try Self.preflight(link.path, target: link.target)
+            try files.createDirectory(atPath: (link.path as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+            try files.createSymbolicLink(atPath: link.path, withDestinationPath: link.destination)
+            guard Paths.canonical(link.path) == link.target else {
+                try? files.removeItem(atPath: link.path)
+                throw MutationError.changed(link.path)
+            }
+        }
+        return links.count
+    }
+
+    static func preflight(_ path: String, target: String) throws {
+        let files = FileManager.default
+        if (try? files.attributesOfItem(atPath: path)) != nil { throw MutationError.changed(path) }
+        guard Paths.canonical(target) == target, files.fileExists(atPath: target + "/SKILL.md") else {
+            throw MutationError.changed(target)
+        }
     }
 
     static func verify(_ item: PathExpectation) throws {
@@ -64,20 +80,24 @@ public actor Mutator {
             guard type == .typeSymbolicLink, (try? files.destinationOfSymbolicLink(atPath: item.path)) == expected else {
                 throw MutationError.changed(item.path)
             }
-        } else if type != .typeDirectory {
+            return
+        }
+        let number = (attributes[.systemFileNumber] as? NSNumber)?.uint64Value
+        guard type == .typeDirectory, Paths.canonical(item.path) == item.path, number == item.fileNumber else {
             throw MutationError.changed(item.path)
         }
     }
 
     private func removeLockEntry(_ key: String) throws {
         let url = URL(fileURLWithPath: layout.agentsLock)
-        guard let data = try? Data(contentsOf: url),
-              var object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+        guard let original = try? Data(contentsOf: url),
+              var object = try JSONSerialization.jsonObject(with: original) as? [String: Any],
               var skills = object["skills"] as? [String: Any],
               skills.removeValue(forKey: key) != nil
         else { return }
         object["skills"] = skills
         let updated = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
+        guard (try? Data(contentsOf: url)) == original else { throw MutationError.changed(layout.agentsLock) }
         try updated.write(to: url, options: .atomic)
     }
 }
