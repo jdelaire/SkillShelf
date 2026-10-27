@@ -67,6 +67,13 @@ struct SkillTable: View {
                 TableColumn("Name") { row in
                     HStack(spacing: 6) {
                         Text(row.entry.name)
+                            .foregroundStyle(row.entry.isDeletable ? .primary : .secondary)
+                        if let reason = row.entry.lockReason {
+                            Image(systemName: "lock.fill")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .help(reason)
+                        }
                         if row.duplicate {
                             Image(systemName: "exclamationmark.triangle.fill")
                                 .foregroundStyle(.orange)
@@ -161,9 +168,9 @@ struct SkillActions: View {
         } label: {
             Label("Delete", systemImage: "trash")
         }
-        .help("Delete (⌘⌫)")
+        .help(entry?.lockReason ?? "Delete (⌘⌫)")
         .keyboardShortcut(.delete, modifiers: .command)
-        .disabled(entry == nil || model.isWorking)
+        .disabled(entry == nil || entry?.isDeletable == false || model.isWorking)
         Menu {
             if let entry {
                 Button("Reveal in Finder") { model.reveal(entry) }
@@ -186,7 +193,7 @@ struct SkillMenuItems: View {
         Button("Push to All Harnesses") { model.requestPush(entry) }
             .disabled(model.isWorking)
         Button("Delete…", role: .destructive) { model.requestDelete(entry) }
-            .disabled(model.isWorking)
+            .disabled(!entry.isDeletable || model.isWorking)
         Divider()
         Button("Reveal in Finder") { model.reveal(entry) }
         Button("Open SKILL.md") { model.openSkillFile(entry) }

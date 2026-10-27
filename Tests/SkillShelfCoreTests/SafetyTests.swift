@@ -13,6 +13,7 @@ import Testing
         let snapshot = fixture.snapshot()
         let entry = try #require(fixture.entry(snapshot, ".claude/skills/lambda"))
 
+        #expect(!entry.isDeletable)
         guard case .blocked = DeletePlanner.plan(for: entry, in: snapshot, layout: fixture.layout) else {
             Issue.record("source folder behind a linked root must not be deletable"); return
         }

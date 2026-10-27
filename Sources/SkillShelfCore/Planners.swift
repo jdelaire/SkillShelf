@@ -53,30 +53,56 @@ public enum DeletePlanner {
         case options([DeleteOption])
     }
 
-    public static func plan(for entry: SkillEntry, in snapshot: Snapshot, layout: Layout) -> Result {
-        switch entry.root.kind {
+    public static func lockReason(
+        root: Root, entryPath: String, isSymlink: Bool, resolvedPath: String?, protection: Protection, layout: Layout
+    ) -> String? {
+        switch root.kind {
         case .builtIn:
-            return .blocked("Built into the harness. It cannot be deleted here.")
+            return "Built into the harness. It cannot be deleted here."
         case .managed:
-            return .blocked("Claude re-downloads this skill. Turn it off on claude.ai instead.")
+            return "Claude re-downloads this skill. Turn it off on claude.ai instead."
         case .plugin:
-            return pluginResult(entry.root.plugin, snapshot)
+            return pluginLockReason(root.plugin)
         case .user:
             break
+        }
+        if isSymlink { return nil }
+        switch protection {
+        case .builtIn, .managed:
+            return "This folder belongs to the harness. It cannot be deleted here."
+        case .plugin(let plugin):
+            return pluginLockReason(plugin)
+        case .none:
+            guard Paths.canonical(entryPath) == entryPath else {
+                let real = resolvedPath.map(layout.display) ?? "another folder"
+                return "This skills folder is itself a link to \(real). Delete the skill there."
+            }
+            return nil
+        }
+    }
+
+    static func pluginLockReason(_ plugin: PluginRef?) -> String? {
+        guard let plugin, plugin.removable else {
+            let owner = plugin?.owner.displayName ?? "its harness"
+            return "\(owner) bundles or installs this plugin by default, so it cannot be uninstalled. Turn it off in \(owner)'s plugin settings instead."
+        }
+        return nil
+    }
+
+    public static func plan(for entry: SkillEntry, in snapshot: Snapshot, layout: Layout) -> Result {
+        if let reason = entry.lockReason { return .blocked(reason) }
+        if case .plugin = entry.root.kind, let plugin = entry.root.plugin {
+            return .options([uninstallOption(plugin, snapshot)])
         }
         if entry.isSymlink {
             return .options(linkOptions(entry, snapshot, layout))
         }
         switch entry.protection {
+        case .plugin(let plugin):
+            return .options([uninstallOption(plugin, snapshot)])
         case .builtIn, .managed:
             return .blocked("This folder belongs to the harness. It cannot be deleted here.")
-        case .plugin(let plugin):
-            return pluginResult(plugin, snapshot)
         case .none:
-            guard Paths.canonical(entry.entryPath) == entry.entryPath else {
-                let real = entry.resolvedPath.map(layout.display) ?? "another folder"
-                return .blocked("This skills folder is itself a link to \(real). Delete the skill there.")
-            }
             let links = incomingLinks(to: entry.entryPath, snapshot)
             let detail = links.isEmpty
                 ? "Moves the folder to the Trash."
@@ -87,14 +113,6 @@ public enum DeletePlanner {
                 action: .trash(items: links + [.folder(entry.entryPath)], lockKey: lockKey(for: entry.entryPath, layout))
             )])
         }
-    }
-
-    static func pluginResult(_ plugin: PluginRef?, _ snapshot: Snapshot) -> Result {
-        guard let plugin, plugin.removable else {
-            let owner = plugin?.owner.displayName ?? "its harness"
-            return .blocked("\(owner) bundles or installs this plugin by default, so it cannot be uninstalled. Turn it off in \(owner)'s plugin settings instead.")
-        }
-        return .options([uninstallOption(plugin, snapshot)])
     }
 
     static func linkOptions(_ entry: SkillEntry, _ snapshot: Snapshot, _ layout: Layout) -> [DeleteOption] {

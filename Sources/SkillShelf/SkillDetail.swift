@@ -13,6 +13,11 @@ struct SkillDetail: View {
                     Text(entry.name).font(.title2.weight(.semibold))
                     KindBadge(row: row)
                 }
+                if let reason = entry.lockReason {
+                    Label(reason, systemImage: "lock.fill")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
                 if !entry.description.isEmpty {
                     Text(entry.description)
                         .foregroundStyle(.secondary)

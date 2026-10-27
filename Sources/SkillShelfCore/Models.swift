@@ -82,8 +82,10 @@ public struct SkillEntry: Sendable, Hashable, Identifiable {
     public let name: String
     public let description: String
     public let protection: Protection
+    public let lockReason: String?
 
     public var id: String { entryPath }
+    public var isDeletable: Bool { lockReason == nil }
     public var isSymlink: Bool { linkDestination != nil }
     public var isBroken: Bool { resolvedPath == nil }
 
@@ -95,7 +97,8 @@ public struct SkillEntry: Sendable, Hashable, Identifiable {
         resolvedPath: String?,
         name: String,
         description: String,
-        protection: Protection
+        protection: Protection,
+        lockReason: String? = nil
     ) {
         self.root = root
         self.folderName = folderName
@@ -105,6 +108,7 @@ public struct SkillEntry: Sendable, Hashable, Identifiable {
         self.name = name
         self.description = description
         self.protection = protection
+        self.lockReason = lockReason
     }
 }
 

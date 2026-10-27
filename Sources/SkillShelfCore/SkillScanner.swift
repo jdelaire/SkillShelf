@@ -133,6 +133,7 @@ public enum SkillScanner {
             let fields = resolved
                 .flatMap { files.contents(atPath: $0 + "/SKILL.md") }
                 .map { Frontmatter.parse(String(decoding: $0, as: UTF8.self)) } ?? [:]
+            let protection = resolved.map { protection(for: $0, guarded: guarded, layout: layout) } ?? .none
             entries.append(SkillEntry(
                 root: root,
                 folderName: folder,
@@ -141,7 +142,11 @@ public enum SkillScanner {
                 resolvedPath: resolved,
                 name: fields["name"] ?? folder,
                 description: fields["description"] ?? "",
-                protection: resolved.map { protection(for: $0, guarded: guarded, layout: layout) } ?? .none
+                protection: protection,
+                lockReason: DeletePlanner.lockReason(
+                    root: root, entryPath: entryPath, isSymlink: destination != nil,
+                    resolvedPath: resolved, protection: protection, layout: layout
+                )
             ))
         }
         return entries
