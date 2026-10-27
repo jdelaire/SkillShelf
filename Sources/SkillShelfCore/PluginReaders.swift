@@ -48,7 +48,11 @@ public enum PluginReaders {
                 source?["source"] as? String == "local" ? source?["path"] as? String : nil,
             ].compactMap { $0 }
             guard let payload = candidates.first(where: { FileManager.default.fileExists(atPath: $0) }) else { continue }
-            let ref = PluginRef(owner: .codex, id: id, removable: !codexBuiltInMarketplaces.contains(marketplace))
+            let installedByDefault = plugin["installPolicy"] as? String == "INSTALLED_BY_DEFAULT"
+            let ref = PluginRef(
+                owner: .codex, id: id,
+                removable: !codexBuiltInMarketplaces.contains(marketplace) && !installedByDefault
+            )
             for skillsPath in manifestSkillPaths(payload + "/.codex-plugin/plugin.json") {
                 roots.append(Root(path: Paths.joined(payload, skillsPath), kind: .plugin, plugin: ref))
             }

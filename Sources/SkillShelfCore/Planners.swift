@@ -91,7 +91,8 @@ public enum DeletePlanner {
 
     static func pluginResult(_ plugin: PluginRef?, _ snapshot: Snapshot) -> Result {
         guard let plugin, plugin.removable else {
-            return .blocked("Part of a plugin bundled with its harness. It cannot be uninstalled here.")
+            let owner = plugin?.owner.displayName ?? "its harness"
+            return .blocked("\(owner) bundles or installs this plugin by default, so it cannot be uninstalled. Turn it off in \(owner)'s plugin settings instead.")
         }
         return .options([uninstallOption(plugin, snapshot)])
     }

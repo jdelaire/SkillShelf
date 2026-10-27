@@ -133,17 +133,20 @@ import Testing
         defer { fixture.remove() }
         try fixture.write(".codex/plugins/cache/openai-bundled/chrome/2.0/.codex-plugin/plugin.json", "{}")
         try fixture.write(".codex/plugins/cache/remote/kit/1.1/.codex-plugin/plugin.json", "{}")
+        try fixture.write(".codex/plugins/cache/remote/pets/1.0/.codex-plugin/plugin.json", "{}")
         let list = """
         {"installed": [
           {"pluginId": "chrome@openai-bundled", "name": "chrome", "marketplaceName": "openai-bundled", "version": "2.0", "installed": true, "enabled": true},
           {"pluginId": "kit@remote", "name": "kit", "marketplaceName": "remote", "version": "1.1", "installed": true, "enabled": true},
-          {"pluginId": "off@remote", "name": "off", "marketplaceName": "remote", "version": "1.0", "installed": true, "enabled": false}
+          {"pluginId": "off@remote", "name": "off", "marketplaceName": "remote", "version": "1.0", "installed": true, "enabled": false},
+          {"pluginId": "pets@remote", "name": "pets", "marketplaceName": "remote", "version": "1.0", "installed": true, "enabled": true, "installPolicy": "INSTALLED_BY_DEFAULT"}
         ]}
         """
 
         let roots = PluginReaders.codexRoots(listJSON: Data(list.utf8), cache: fixture.layout.codexPluginCache)
 
-        #expect(roots.count == 2)
+        #expect(roots.count == 3)
+        #expect(roots.first { $0.plugin?.id == "pets@remote" }?.plugin?.removable == false)
         #expect(roots.first { $0.plugin?.id == "chrome@openai-bundled" }?.plugin?.removable == false)
         #expect(roots.first { $0.plugin?.id == "kit@remote" }?.path == fixture.layout.codexPluginCache + "/remote/kit/1.1/skills")
     }
