@@ -16,6 +16,13 @@ mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 xcrun actool Resources/SkillShelf.icon --compile "$app/Contents/Resources" \
   --platform macosx --minimum-deployment-target 15.0 --app-icon SkillShelf \
   --output-partial-info-plist "$repository_root/.build/icon-info.plist" --target-device mac >/dev/null
+/usr/bin/xattr -cr "$app"
 /usr/bin/codesign --force --deep --sign - "$app"
 
+version="$(/usr/bin/plutil -extract CFBundleShortVersionString raw Resources/SkillShelf-Info.plist)"
+archive="$repository_root/dist/SkillShelf-$version.zip"
+rm -f "$archive"
+/usr/bin/ditto -c -k --norsrc --noextattr --noqtn --keepParent "$app" "$archive"
+
 print -- "SkillShelf app packaged: $app"
+print -- "Release archive: $archive"
