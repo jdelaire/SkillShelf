@@ -90,6 +90,7 @@ struct SkillTable: View {
                 }
                 .width(min: 90, ideal: 110)
             }
+            .tableStyle(.inset(alternatesRowBackgrounds: false))
             .contextMenu(forSelectionType: String.self) { ids in
                 if let id = ids.first, let entry = model.snapshot.entry(id: id) {
                     SkillMenuItems(entry: entry)

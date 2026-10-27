@@ -13,10 +13,11 @@ struct SkillFileView: View {
             Text("SKILL.md").font(.headline)
             if let loaded, loaded.folder == folder {
                 Markdown(loaded.parsed.content, baseURL: URL(fileURLWithPath: folder, isDirectory: true))
-                    .markdownTheme(.gitHub.text { BackgroundColor(nil) })
+                    .markdownTheme(.shelf)
                     .markdownImageProvider(LocalImageProvider())
                     .markdownInlineImageProvider(LocalInlineImageProvider())
                     .textSelection(.enabled)
+                    .frame(maxWidth: 720, alignment: .leading)
             } else {
                 ProgressView().controlSize(.small)
             }
