@@ -27,6 +27,14 @@ public enum Frontmatter {
         return fields
     }
 
+    public static func body(_ text: String) -> String {
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        guard lines.first?.trimmingCharacters(in: .whitespaces) == "---",
+              let end = lines.dropFirst().firstIndex(where: { $0.trimmingCharacters(in: .whitespacesAndNewlines) == "---" })
+        else { return text }
+        return lines[(end + 1)...].joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     static func unquote(_ value: String) -> String {
         guard value.count >= 2, let first = value.first, first == value.last, first == "\"" || first == "'" else {
             return value

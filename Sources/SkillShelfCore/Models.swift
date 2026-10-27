@@ -1,7 +1,7 @@
 import Foundation
 
 public enum HarnessID: String, CaseIterable, Sendable, Identifiable, Hashable {
-    case claude, codex, cursor, opencode, grok, antigravity
+    case claude, codex, cursor, opencode, grok, antigravity, muse
 
     public var id: String { rawValue }
 
@@ -13,6 +13,7 @@ public enum HarnessID: String, CaseIterable, Sendable, Identifiable, Hashable {
         case .opencode: [".config/opencode"]
         case .grok: [".grok"]
         case .antigravity: [".gemini", ".t3/tools/antigravity-acp", "/Applications/Antigravity.app"]
+        case .muse: [".config/muse", ".local/share/muse"]
         }
     }
 
@@ -24,6 +25,7 @@ public enum HarnessID: String, CaseIterable, Sendable, Identifiable, Hashable {
         case .opencode: "OpenCode"
         case .grok: "Grok"
         case .antigravity: "Antigravity"
+        case .muse: "Muse Code"
         }
     }
 }
@@ -125,12 +127,20 @@ public struct Snapshot: Sendable {
     public let entries: [SkillEntry]
     public let harnessRoots: [HarnessID: [HarnessRoot]]
     public let notes: [String]
+    public let visible: [HarnessID: Set<String>]
 
-    public init(generation: Int, entries: [SkillEntry], harnessRoots: [HarnessID: [HarnessRoot]], notes: [String]) {
+    public init(
+        generation: Int,
+        entries: [SkillEntry],
+        harnessRoots: [HarnessID: [HarnessRoot]],
+        notes: [String],
+        visible: [HarnessID: Set<String>] = [:]
+    ) {
         self.generation = generation
         self.entries = entries
         self.harnessRoots = harnessRoots
         self.notes = notes
+        self.visible = visible
     }
 
     public static let empty = Snapshot(generation: 0, entries: [], harnessRoots: [:], notes: [])
@@ -143,7 +153,7 @@ public struct Snapshot: Sendable {
         let roots = harnessRoots[harness] ?? []
         var rows: [HarnessRow] = []
         for harnessRoot in roots {
-            for entry in entries where entry.root.path == harnessRoot.root.path {
+            for entry in entries where entry.root.path == harnessRoot.root.path && isVisible(entry, to: harness) {
                 rows.append(HarnessRow(entry: entry, thirdParty: harnessRoot.thirdParty, duplicate: false))
             }
         }
@@ -160,9 +170,15 @@ public struct Snapshot: Sendable {
 
     public func seenBy(_ entry: SkillEntry) -> [(HarnessID, Bool)] {
         HarnessID.allCases.compactMap { harness in
-            guard let match = harnessRoots[harness]?.first(where: { $0.root.path == entry.root.path }) else { return nil }
+            guard isVisible(entry, to: harness),
+                  let match = harnessRoots[harness]?.first(where: { $0.root.path == entry.root.path })
+            else { return nil }
             return (harness, match.thirdParty)
         }
+    }
+
+    func isVisible(_ entry: SkillEntry, to harness: HarnessID) -> Bool {
+        visible[harness].map { $0.contains(entry.entryPath) } ?? true
     }
 
     public func entry(id: String) -> SkillEntry? {

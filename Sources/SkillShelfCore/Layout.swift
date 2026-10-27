@@ -33,13 +33,15 @@ public struct Layout: Sendable {
     public var antigravityCLISkills: String { path(".gemini/antigravity-cli/skills") }
     public var antigravityLegacySkills: String { path(".gemini/antigravity/skills") }
     public var antigravityPlugins: String { path(".gemini/antigravity-cli/plugins") }
+    public var museSkills: String { path(".config/muse/skills") }
+    public var museBundled: String { path(".local/share/muse/skills/bundled/muse-core/skills") }
 
     public var protectedPrefixes: [String] {
         [
             claudeSynced, codexSystem, cursorBuiltIn, grokBundled,
             path(".claude/plugins"), path(".codex/plugins"), path(".codex/.tmp"),
             path(".cache/codex-runtimes"), path(".grok/plugins"), path(".grok/installed-plugins"),
-            antigravityPlugins,
+            antigravityPlugins, path(".local/share/muse"),
         ]
     }
 
@@ -57,6 +59,7 @@ public struct Layout: Sendable {
         case .opencode: opencodeSkills
         case .grok: grokSkills
         case .antigravity: antigravitySkills
+        case .muse: museSkills
         }
     }
 

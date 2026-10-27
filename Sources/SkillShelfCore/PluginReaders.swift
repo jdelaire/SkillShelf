@@ -60,6 +60,26 @@ public enum PluginReaders {
         return roots
     }
 
+    public static func museEntryPaths(listJSON: Data, layout: Layout) -> Set<String>? {
+        guard
+            let object = try? JSONSerialization.jsonObject(with: listJSON) as? [String: Any],
+            let skills = object["skills"] as? [[String: Any]]
+        else { return nil }
+        let prefixes = [
+            ("$HOME/", layout.home + "/"),
+            ("$CONFIG_DIR/", layout.path(".config/muse") + "/"),
+            ("bundled://muse-core/skills/", layout.museBundled + "/"),
+        ]
+        var paths = Set<String>()
+        for skill in skills {
+            guard var path = skill["path"] as? String, path.hasSuffix("/SKILL.md") else { continue }
+            path.removeLast("/SKILL.md".count)
+            guard let (from, to) = prefixes.first(where: { path.hasPrefix($0.0) }) else { continue }
+            paths.insert(to + path.dropFirst(from.count))
+        }
+        return paths
+    }
+
     static func manifestSkillPaths(_ manifest: String) -> [String] {
         guard
             let data = FileManager.default.contents(atPath: manifest),

@@ -107,6 +107,64 @@ import Testing
     }
 }
 
+@Suite struct FrontmatterTests {
+    @Test func bodyDropsFrontmatterAndKeepsMarkdown() {
+        let text = "---\nname: phi\ndescription: >\n  folded\n---\n\n# Phi\n\n- one\n---\nafter rule\n"
+        #expect(Frontmatter.body(text) == "# Phi\n\n- one\n---\nafter rule")
+        #expect(Frontmatter.body("# No frontmatter") == "# No frontmatter")
+    }
+}
+
+@Suite struct MuseTests {
+    @Test func museSeesSharedFoldersAndKeepsBundledSkillsReadOnly() throws {
+        let fixture = try Fixture(installed: [.codex, .muse])
+        defer { fixture.remove() }
+        try fixture.skill(".codex/skills/sigma")
+        try fixture.skill(".local/share/muse/skills/bundled/muse-core/skills/tau")
+        let snapshot = fixture.snapshot()
+
+        let rows = snapshot.rows(for: .muse)
+        #expect(rows.contains { $0.entry.folderName == "sigma" })
+        let bundled = try #require(rows.first { $0.entry.folderName == "tau" }?.entry)
+        #expect(!bundled.isDeletable)
+    }
+
+    @Test func museViewFollowsMuseOwnSkillList() throws {
+        let fixture = try Fixture(installed: [.claude, .muse])
+        defer { fixture.remove() }
+        try fixture.skill(".claude/skills/chi")
+        try fixture.skill(".local/share/muse/skills/bundled/muse-core/skills/psi")
+        try fixture.skill(".local/share/muse/skills/bundled/muse-core/skills/rejected")
+        let list = """
+        {"skills": [
+          {"path": "$HOME/.claude/skills/chi/SKILL.md"},
+          {"path": "bundled://muse-core/skills/psi/SKILL.md"},
+          {"path": "plugin://threejs/skills/threejs/SKILL.md"}
+        ]}
+        """
+        var inputs = SkillScanner.Inputs()
+        inputs.visible[.muse] = try #require(PluginReaders.museEntryPaths(listJSON: Data(list.utf8), layout: fixture.layout))
+        let snapshot = fixture.snapshot(inputs)
+
+        #expect(Set(snapshot.rows(for: .muse).map(\.entry.folderName)) == ["chi", "psi"])
+        #expect(snapshot.rows(for: .claude).map(\.entry.folderName) == ["chi"])
+    }
+
+    @Test func pushLinksIntoMuseConfigWhenNoSharedFolderHasIt() throws {
+        let fixture = try Fixture(installed: [.muse])
+        defer { fixture.remove() }
+        try fixture.skill("Developer/stack/skills/upsilon")
+        try fixture.link(".config/muse/skills/upsilon-alias", to: "../../../Developer/stack/skills/upsilon")
+        let snapshot = fixture.snapshot()
+        let entry = try #require(fixture.entry(snapshot, ".config/muse/skills/upsilon-alias"))
+
+        guard case .steps(let steps) = PushPlanner.plan(for: entry, in: snapshot, layout: fixture.layout) else {
+            Issue.record("expected steps"); return
+        }
+        #expect(steps.map(\.outcome) == [.link(path: fixture.layout.museSkills + "/upsilon", destination: "../../../Developer/stack/skills/upsilon")])
+    }
+}
+
 @Suite struct PluginReaderTests {
     @Test func claudeReadsOnlyEnabledUserScopePlugins() throws {
         let fixture = try Fixture()

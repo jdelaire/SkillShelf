@@ -6,6 +6,7 @@ public enum SkillScanner {
         public var codexPluginRoots: [Root]
         public var grokCompat: PluginReaders.GrokCompat
         public var notes: [String]
+        public var visible: [HarnessID: Set<String>] = [:]
 
         public init(
             claudePluginRoots: [Root] = [],
@@ -52,7 +53,17 @@ public enum SkillScanner {
         if files.fileExists(atPath: layout.grokRegistry) {
             notes.append("Grok plugin skills are not listed yet.")
         }
-        let inputs = Inputs(claudePluginRoots: claudePlugins, codexPluginRoots: codexPlugins, grokCompat: compat, notes: notes)
+        var visible: [HarnessID: Set<String>] = [:]
+        if layout.isInstalled(.muse) {
+            if let result = try? await runner.run("muse", ["skills", "list", "--json"]), result.status == 0,
+               let paths = PluginReaders.museEntryPaths(listJSON: Data(result.output.utf8), layout: layout) {
+                visible[.muse] = paths
+            } else {
+                notes.append("Muse Code skills not confirmed with `muse skills list`; showing every folder Muse reads.")
+            }
+        }
+        var inputs = Inputs(claudePluginRoots: claudePlugins, codexPluginRoots: codexPlugins, grokCompat: compat, notes: notes)
+        inputs.visible = visible
         return snapshot(layout: layout, inputs: inputs, generation: generation)
     }
 
@@ -96,6 +107,9 @@ public enum SkillScanner {
                         plugin: PluginRef(owner: .antigravity, id: name, removable: false)
                     ))
                 },
+            .muse: [HarnessRoot(root: user(layout.museSkills)), HarnessRoot(root: claudeSkills),
+                    HarnessRoot(root: agents), HarnessRoot(root: codexSkills),
+                    HarnessRoot(root: Root(path: layout.museBundled, kind: .builtIn))],
         ]
         return all.filter { layout.isInstalled($0.key) }
     }
@@ -111,7 +125,9 @@ public enum SkillScanner {
         }
         let guarded = roots.filter { $0.kind != .user }
         let entries = roots.flatMap { scanRoot($0, guarded: guarded, layout: layout) }
-        return Snapshot(generation: generation, entries: entries, harnessRoots: harnessRoots, notes: inputs.notes)
+        return Snapshot(
+            generation: generation, entries: entries, harnessRoots: harnessRoots, notes: inputs.notes, visible: inputs.visible
+        )
     }
 
     static func scanRoot(_ root: Root, guarded: [Root], layout: Layout) -> [SkillEntry] {

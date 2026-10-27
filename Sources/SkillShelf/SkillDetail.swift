@@ -39,6 +39,9 @@ struct SkillDetail: View {
                     Text("Seen by").font(.headline)
                     FlowChips(items: model.snapshot.seenBy(entry))
                 }
+                if let folder = entry.resolvedPath {
+                    SkillFileView(folder: folder)
+                }
             }
             .padding(20)
             .frame(maxWidth: .infinity, alignment: .leading)

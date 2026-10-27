@@ -67,7 +67,6 @@ struct SkillTable: View {
                 TableColumn("Name") { row in
                     HStack(spacing: 6) {
                         Text(row.entry.name)
-                            .foregroundStyle(row.entry.isDeletable ? .primary : .secondary)
                         if let reason = row.entry.lockReason {
                             Image(systemName: "lock.fill")
                                 .font(.caption)
@@ -123,7 +122,7 @@ struct KindBadge: View {
             .font(.caption.weight(.medium))
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
-            .background(color.opacity(0.15), in: Capsule())
+            .background(color.opacity(0.2), in: Capsule())
             .foregroundStyle(color)
     }
 
@@ -142,9 +141,9 @@ struct KindBadge: View {
     private var color: Color {
         let entry = row.entry
         if entry.isBroken { return .red }
-        if row.thirdParty { return .gray }
+        if row.thirdParty { return .secondary }
         switch entry.protection {
-        case .builtIn, .managed: return .gray
+        case .builtIn, .managed: return .secondary
         case .plugin: return .purple
         case .none: return entry.isSymlink ? .blue : .green
         }

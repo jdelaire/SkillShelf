@@ -39,7 +39,7 @@ final class HarnessIcons {
         case .codex: ["com.openai.codex", "com.openai.chat"]
         case .cursor: ["com.todesktop.230313mzl4w4u92"]
         case .antigravity: ["com.google.antigravity"]
-        case .opencode, .grok: []
+        case .opencode, .grok, .muse: []
         }
     }
 }

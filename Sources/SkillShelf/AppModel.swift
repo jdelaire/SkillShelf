@@ -27,7 +27,9 @@ final class AppModel {
     private let mutator: Mutator
 
     var snapshot = Snapshot.empty
-    var sidebar: SidebarItem? = .all
+    var sidebar: SidebarItem? = .all {
+        didSet { if sidebar != oldValue { selection = nil } }
+    }
     var selection: String?
     var search = ""
     var isScanning = false
