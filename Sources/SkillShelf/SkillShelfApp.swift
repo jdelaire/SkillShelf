@@ -4,6 +4,7 @@ import SwiftUI
 @main
 struct SkillShelfApp: App {
     @State private var model = AppModel()
+    @StateObject private var updater = Updater()
 
     init() {
         NSApplication.shared.setActivationPolicy(.regular)
@@ -20,6 +21,9 @@ struct SkillShelfApp: App {
                 }
         }
         .commands {
+            CommandGroup(after: .appInfo) {
+                CheckForUpdatesButton(updater: updater)
+            }
             CommandGroup(after: .toolbar) {
                 Button("Refresh") { Task { await model.refresh() } }
                     .keyboardShortcut("r", modifiers: .command)
