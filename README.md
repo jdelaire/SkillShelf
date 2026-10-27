@@ -1,6 +1,6 @@
 # SkillShelf
 
-macOS app that lists the agent skills installed for Claude Code, Codex, Cursor, OpenCode and Grok, shows where each one lives, deletes them to the Trash, and pushes a skill to every harness with symlinks.
+macOS app that lists the agent skills installed for Claude Code, Codex, Cursor, OpenCode, Grok and Antigravity, shows where each one lives, deletes them to the Trash, and pushes a skill to every harness with symlinks.
 
 ## Build
 

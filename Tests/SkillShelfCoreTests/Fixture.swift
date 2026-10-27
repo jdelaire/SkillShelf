@@ -5,11 +5,14 @@ struct Fixture {
     let home: String
     let layout: Layout
 
-    init() throws {
+    init(installed: [HarnessID] = HarnessID.allCases) throws {
         let raw = NSTemporaryDirectory() + "skillshelf-" + UUID().uuidString
         try FileManager.default.createDirectory(atPath: raw, withIntermediateDirectories: true)
         layout = Layout(home: raw)
         home = layout.home
+        for harness in installed {
+            try FileManager.default.createDirectory(atPath: layout.path(harness.detectionPaths[0]), withIntermediateDirectories: true)
+        }
     }
 
     func skill(_ relative: String, name: String? = nil) throws {

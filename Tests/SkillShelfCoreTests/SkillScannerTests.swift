@@ -76,6 +76,37 @@ import Testing
     }
 }
 
+@Suite struct DetectionTests {
+    @Test func onlyInstalledHarnessesAppearAndGetPushed() throws {
+        let fixture = try Fixture(installed: [.claude, .codex])
+        defer { fixture.remove() }
+        try fixture.skill(".codex/skills/iota")
+        let snapshot = fixture.snapshot()
+        let entry = try #require(fixture.entry(snapshot, ".codex/skills/iota"))
+
+        #expect(snapshot.harnesses == [.claude, .codex])
+        guard case .steps(let steps) = PushPlanner.plan(for: entry, in: snapshot, layout: fixture.layout) else {
+            Issue.record("expected steps"); return
+        }
+        #expect(steps.map(\.harness) == [.claude, .codex])
+    }
+
+    @Test func antigravityRunningThroughT3IsDetectedAndPushedToItsConfigFolder() throws {
+        let fixture = try Fixture(installed: [.claude])
+        defer { fixture.remove() }
+        try FileManager.default.createDirectory(atPath: fixture.layout.path(".t3/tools/antigravity-acp"), withIntermediateDirectories: true)
+        try fixture.skill(".claude/skills/kappa")
+        let snapshot = fixture.snapshot()
+        let entry = try #require(fixture.entry(snapshot, ".claude/skills/kappa"))
+
+        #expect(snapshot.harnesses == [.claude, .antigravity])
+        guard case .steps(let steps) = PushPlanner.plan(for: entry, in: snapshot, layout: fixture.layout) else {
+            Issue.record("expected steps"); return
+        }
+        #expect(steps.last?.outcome == .link(path: fixture.layout.path(".gemini/config/skills/kappa"), destination: "../../../.claude/skills/kappa"))
+    }
+}
+
 @Suite struct PluginReaderTests {
     @Test func claudeReadsOnlyEnabledUserScopePlugins() throws {
         let fixture = try Fixture()

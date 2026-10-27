@@ -29,13 +29,24 @@ public struct Layout: Sendable {
     public var grokBundled: String { path(".grok/bundled/skills") }
     public var grokConfig: String { path(".grok/config.toml") }
     public var grokRegistry: String { path(".grok/installed-plugins/registry.json") }
+    public var antigravitySkills: String { path(".gemini/config/skills") }
+    public var antigravityCLISkills: String { path(".gemini/antigravity-cli/skills") }
+    public var antigravityLegacySkills: String { path(".gemini/antigravity/skills") }
+    public var antigravityPlugins: String { path(".gemini/antigravity-cli/plugins") }
 
     public var protectedPrefixes: [String] {
         [
             claudeSynced, codexSystem, cursorBuiltIn, grokBundled,
             path(".claude/plugins"), path(".codex/plugins"), path(".codex/.tmp"),
             path(".cache/codex-runtimes"), path(".grok/plugins"), path(".grok/installed-plugins"),
+            antigravityPlugins,
         ]
+    }
+
+    public func isInstalled(_ harness: HarnessID) -> Bool {
+        harness.detectionPaths.contains { marker in
+            FileManager.default.fileExists(atPath: marker.hasPrefix("/") ? marker : path(marker))
+        }
     }
 
     public func pushRoot(for harness: HarnessID) -> String {
@@ -45,6 +56,7 @@ public struct Layout: Sendable {
         case .cursor: cursorSkills
         case .opencode: opencodeSkills
         case .grok: grokSkills
+        case .antigravity: antigravitySkills
         }
     }
 

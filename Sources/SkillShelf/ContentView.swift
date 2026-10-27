@@ -12,8 +12,8 @@ struct ContentView: View {
                     .badge(model.snapshot.entries.count)
                     .tag(SidebarItem.all)
                 Section("Harnesses") {
-                    ForEach(HarnessID.allCases) { harness in
-                        Label(harness.displayName, systemImage: "shippingbox")
+                    ForEach(model.snapshot.harnesses) { harness in
+                        Label { Text(harness.displayName) } icon: { HarnessIcon(harness: harness) }
                             .badge(model.count(for: harness))
                             .tag(SidebarItem.harness(harness))
                     }

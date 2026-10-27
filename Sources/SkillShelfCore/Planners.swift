@@ -166,7 +166,7 @@ public enum PushPlanner {
             present[item.root.path, default: [:]][item.folderName] = .some(item.resolvedPath)
         }
         var steps: [PushStep] = []
-        for harness in HarnessID.allCases {
+        for harness in snapshot.harnesses {
             let roots = (snapshot.harnessRoots[harness] ?? []).filter { !$0.thirdParty }.map(\.root.path)
             let found = roots.compactMap { root in present[root]?[name].map { (root: root, resolved: $0) } }
             if let match = found.first(where: { $0.resolved == target }) {

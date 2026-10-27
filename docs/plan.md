@@ -4,7 +4,9 @@ macOS app that lists every agent skill installed per harness, shows where it liv
 
 ## Scope
 
-Harnesses in v1: Claude Code, Codex, Cursor, OpenCode, Grok. User-level skills and installed plugin skills. No project-level skills. Muse and Antigravity have no skill folders on this Mac, so they are out of v1.
+Harnesses: Claude Code, Codex, Cursor, OpenCode, Grok, Antigravity. User-level skills and installed plugin skills. No project-level skills. Muse is out of v1.
+
+A harness is shown only when it is installed: its folder exists (`~/.claude`, `~/.codex`, `~/.cursor`, `~/.config/opencode`, `~/.grok`, `~/.gemini`), or for Antigravity also `~/.t3/tools/antigravity-acp` or `/Applications/Antigravity.app`. Sidebar icons come from the installed app (Claude, ChatGPT/Codex, Cursor, Antigravity) and fall back to a terminal symbol.
 
 ## Locations
 
@@ -16,6 +18,7 @@ Each root has a kind: `user` (deletable), `builtIn` (read-only), `managed` (read
 | Codex | `~/.codex/skills` user; `~/.agents/skills` user; `~/.codex/skills/.system` builtIn; enabled plugins from `codex plugin list --json`. Payload: `~/.codex/plugins/cache/<marketplace>/<name>/<version>`, else its `latest` link, else `source.path`. Skills at the `skills` path in `.codex-plugin/plugin.json`, default `skills/`. Marketplaces `openai-bundled` and `openai-primary-runtime` are builtIn | `~/.agents/skills` |
 | Cursor | `~/.cursor/skills` user; `~/.agents/skills` user; `~/.claude/skills`, `~/.codex/skills`, `~/.grok/skills` and enabled Claude plugins, labeled "third-party, only if enabled in Cursor"; `~/.cursor/skills-cursor` builtIn | `~/.cursor/skills` |
 | OpenCode | `~/.config/opencode/skills` user; `~/.config/opencode/skill` user; `~/.claude/skills`; `~/.agents/skills` | `~/.config/opencode/skills` |
+| Antigravity | `~/.gemini/config/skills` user (app and IDE); `~/.gemini/antigravity-cli/skills` user (CLI); `~/.gemini/antigravity/skills` user (legacy); `~/.gemini/antigravity-cli/plugins/*/skills` plugin, read-only | `~/.gemini/config/skills` |
 | Grok | `~/.grok/skills` user; `~/.agents/skills`; `~/.claude/skills` unless `[compat.claude] skills = false`; `~/.cursor/skills` unless `[compat.cursor] skills = false` (both read from `~/.grok/config.toml`); `~/.grok/bundled/skills` builtIn. Grok plugins are listed only when `~/.grok/installed-plugins/registry.json` exists | `~/.grok/skills` |
 
 A skill is a direct child folder of a root that holds a `SKILL.md`. Nested skills are out of v1.

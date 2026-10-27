@@ -61,7 +61,7 @@ struct FlowChips: View {
     var body: some View {
         HStack(spacing: 6) {
             ForEach(items, id: \.0) { harness, thirdParty in
-                Text(thirdParty ? "\(harness.displayName)*" : harness.displayName)
+                Label { Text(thirdParty ? "\(harness.displayName)*" : harness.displayName) } icon: { HarnessIcon(harness: harness) }
                     .font(.caption)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 3)

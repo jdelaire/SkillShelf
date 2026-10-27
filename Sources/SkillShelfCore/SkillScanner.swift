@@ -29,15 +29,17 @@ public enum SkillScanner {
             settings: files.contents(atPath: layout.claudeSettings)
         )
         var codexPlugins: [Root] = []
-        do {
-            let result = try await runner.run("codex", ["plugin", "list", "--json"])
-            if result.status == 0 {
-                codexPlugins = PluginReaders.codexRoots(listJSON: Data(result.output.utf8), cache: layout.codexPluginCache)
-            } else {
-                notes.append("Codex plugins not listed: `codex plugin list` exited with \(result.status).")
+        if layout.isInstalled(.codex) {
+            do {
+                let result = try await runner.run("codex", ["plugin", "list", "--json"])
+                if result.status == 0 {
+                    codexPlugins = PluginReaders.codexRoots(listJSON: Data(result.output.utf8), cache: layout.codexPluginCache)
+                } else {
+                    notes.append("Codex plugins not listed: `codex plugin list` exited with \(result.status).")
+                }
+            } catch {
+                notes.append("Codex plugins not listed: \(error.localizedDescription)")
             }
-        } catch {
-            notes.append("Codex plugins not listed: \(error.localizedDescription)")
         }
         let grokConfig = files.contents(atPath: layout.grokConfig).map { String(decoding: $0, as: UTF8.self) }
         let compat = PluginReaders.grokCompat(config: grokConfig)
@@ -68,7 +70,7 @@ public enum SkillScanner {
         if inputs.grokCompat.cursorSkills { grok.append(HarnessRoot(root: cursorSkills)) }
         grok.append(HarnessRoot(root: Root(path: layout.grokBundled, kind: .builtIn)))
 
-        return [
+        let all: [HarnessID: [HarnessRoot]] = [
             .claude: [HarnessRoot(root: claudeSkills)]
                 + synced.map { HarnessRoot(root: $0) }
                 + inputs.claudePluginRoots.map { HarnessRoot(root: $0) },
@@ -84,7 +86,18 @@ public enum SkillScanner {
             .opencode: [HarnessRoot(root: user(layout.opencodeSkills)), HarnessRoot(root: user(layout.opencodeSkill)),
                         HarnessRoot(root: claudeSkills), HarnessRoot(root: agents)],
             .grok: grok,
+            .antigravity: [HarnessRoot(root: user(layout.antigravitySkills)),
+                           HarnessRoot(root: user(layout.antigravityCLISkills)),
+                           HarnessRoot(root: user(layout.antigravityLegacySkills))]
+                + subdirectories(layout.antigravityPlugins).map {
+                    let name = ($0 as NSString).lastPathComponent
+                    return HarnessRoot(root: Root(
+                        path: $0 + "/skills", kind: .plugin,
+                        plugin: PluginRef(owner: .antigravity, id: name, removable: false)
+                    ))
+                },
         ]
+        return all.filter { layout.isInstalled($0.key) }
     }
 
     public static func snapshot(layout: Layout, inputs: Inputs, generation: Int) -> Snapshot {

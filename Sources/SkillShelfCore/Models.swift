@@ -1,9 +1,20 @@
 import Foundation
 
 public enum HarnessID: String, CaseIterable, Sendable, Identifiable, Hashable {
-    case claude, codex, cursor, opencode, grok
+    case claude, codex, cursor, opencode, grok, antigravity
 
     public var id: String { rawValue }
+
+    public var detectionPaths: [String] {
+        switch self {
+        case .claude: [".claude"]
+        case .codex: [".codex"]
+        case .cursor: [".cursor"]
+        case .opencode: [".config/opencode"]
+        case .grok: [".grok"]
+        case .antigravity: [".gemini", ".t3/tools/antigravity-acp", "/Applications/Antigravity.app"]
+        }
+    }
 
     public var displayName: String {
         switch self {
@@ -12,6 +23,7 @@ public enum HarnessID: String, CaseIterable, Sendable, Identifiable, Hashable {
         case .cursor: "Cursor"
         case .opencode: "OpenCode"
         case .grok: "Grok"
+        case .antigravity: "Antigravity"
         }
     }
 }
@@ -118,6 +130,10 @@ public struct Snapshot: Sendable {
     }
 
     public static let empty = Snapshot(generation: 0, entries: [], harnessRoots: [:], notes: [])
+
+    public var harnesses: [HarnessID] {
+        HarnessID.allCases.filter { harnessRoots[$0] != nil }
+    }
 
     public func rows(for harness: HarnessID) -> [HarnessRow] {
         let roots = harnessRoots[harness] ?? []
