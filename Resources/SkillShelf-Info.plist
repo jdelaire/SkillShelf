@@ -5,6 +5,10 @@
 <dict>
   <key>CFBundleExecutable</key>
   <string>SkillShelf</string>
+  <key>CFBundleIconFile</key>
+  <string>SkillShelf</string>
+  <key>CFBundleIconName</key>
+  <string>SkillShelf</string>
   <key>CFBundleIdentifier</key>
   <string>com.jdelaire.skillshelf</string>
   <key>CFBundleName</key>
