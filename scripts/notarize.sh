@@ -25,6 +25,11 @@ xcrun stapler validate "$app"
 rm -f "$archive"
 /usr/bin/ditto -c -k --norsrc --noextattr --noqtn --keepParent "$app" "$archive"
 
+sparkle_bin="$repository_root/.build/artifacts/sparkle/Sparkle/bin"
+bundled_key="$(/usr/bin/plutil -extract SUPublicEDKey raw "$repository_root/Resources/SkillShelf-Info.plist")"
+keychain_key="$("$sparkle_bin/generate_keys" --account skillshelf -p)"
+[[ "$keychain_key" == "$bundled_key" ]] || { print -u2 -- "Sparkle key in keychain does not match SUPublicEDKey"; exit 1; }
+
 download_prefix="${SKILLSHELF_DOWNLOAD_PREFIX:-https://github.com/jdelaire/SkillShelf/releases/download/v$version/}"
 staging="$repository_root/dist/appcast"
 rm -rf "$staging"
@@ -32,10 +37,13 @@ mkdir -p "$staging"
 cp "$archive" "$staging/"
 notes="$repository_root/docs/releases/$version.md"
 [[ -f "$notes" ]] && cp "$notes" "$staging/SkillShelf-$version.md"
-"$repository_root/.build/artifacts/sparkle/Sparkle/bin/generate_appcast" "$staging" \
+"$sparkle_bin/generate_appcast" "$staging" \
   --account skillshelf --maximum-deltas 0 --embed-release-notes \
   --download-url-prefix "$download_prefix" \
   --link https://github.com/jdelaire/SkillShelf
+signature="$(/usr/bin/sed -nE 's/.*sparkle:edSignature="([^"]+)".*/\1/p' "$staging/appcast.xml")"
+[[ -n "$signature" ]] || { print -u2 -- "appcast.xml has no edSignature"; exit 1; }
+"$sparkle_bin/sign_update" --account skillshelf --verify "$archive" "$signature"
 cp "$staging/appcast.xml" "$repository_root/dist/appcast.xml"
 
 print -- "Notarized release archive: $archive"
