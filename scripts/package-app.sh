@@ -17,7 +17,12 @@ xcrun actool Resources/SkillShelf.icon --compile "$app/Contents/Resources" \
   --platform macosx --minimum-deployment-target 15.0 --app-icon SkillShelf \
   --output-partial-info-plist "$repository_root/.build/icon-info.plist" --target-device mac >/dev/null
 /usr/bin/xattr -cr "$app"
-/usr/bin/codesign --force --deep --sign - "$app"
+sign_identity="${SKILLSHELF_SIGN_IDENTITY:--}"
+if [[ "$sign_identity" == - ]]; then
+  /usr/bin/codesign --force --deep --sign - "$app"
+else
+  /usr/bin/codesign --force --options runtime --timestamp --sign "$sign_identity" "$app"
+fi
 
 version="$(/usr/bin/plutil -extract CFBundleShortVersionString raw Resources/SkillShelf-Info.plist)"
 archive="$repository_root/dist/SkillShelf-$version.zip"

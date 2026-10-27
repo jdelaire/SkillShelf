@@ -4,7 +4,7 @@ macOS app that lists the agent skills installed for Claude Code, Codex, Cursor, 
 
 ## Install
 
-Download `SkillShelf-0.1.0.zip` from the [latest release](https://github.com/jdelaire/SkillShelf/releases/latest), unzip it and move `SkillShelf.app` to Applications. The app is ad-hoc signed and not notarized, so the first time, right-click it and choose Open.
+Download the zip from the [latest release](https://github.com/jdelaire/SkillShelf/releases/latest), unzip it and move `SkillShelf.app` to Applications. Releases are signed with Developer ID and notarized by Apple.
 
 Requires macOS 15 or later on Apple silicon.
 
@@ -15,5 +15,7 @@ swift test
 ./scripts/package-app.sh
 open dist/SkillShelf.app
 ```
+
+`scripts/package-app.sh` signs ad hoc. To build a notarized release, store notary credentials once with `xcrun notarytool store-credentials`, then run `SKILLSHELF_NOTARY_PROFILE=<profile> ./scripts/notarize.sh`.
 
 Where each harness loads skills from, and the delete and push rules, are in [docs/plan.md](docs/plan.md).
