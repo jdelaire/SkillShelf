@@ -23,7 +23,9 @@ struct SkillDetail: View {
                     if let destination = entry.linkDestination {
                         PathRow(label: "Links to", value: destination)
                     }
-                    PathRow(label: "Folder", value: entry.resolvedPath.map(model.layout.display) ?? "Missing")
+                    if entry.resolvedPath != entry.entryPath {
+                        PathRow(label: "Folder", value: entry.resolvedPath.map(model.layout.display) ?? "Missing")
+                    }
                     if case .plugin(let plugin) = entry.protection {
                         PathRow(label: "Plugin", value: plugin.id)
                     }
@@ -32,24 +34,6 @@ struct SkillDetail: View {
                     Text("Seen by").font(.headline)
                     FlowChips(items: model.snapshot.seenBy(entry))
                 }
-                HStack {
-                    Button("Reveal in Finder") { model.reveal(entry) }
-                    Button("Open SKILL.md") { model.openSkillFile(entry) }
-                        .disabled(entry.isBroken)
-                }
-                HStack {
-                    Button {
-                        model.requestPush(entry)
-                    } label: {
-                        Label("Push to all harnesses", systemImage: "square.and.arrow.up.on.square")
-                    }
-                    Button(role: .destructive) {
-                        model.requestDelete(entry)
-                    } label: {
-                        Label("Delete…", systemImage: "trash")
-                    }
-                }
-                .disabled(model.isWorking)
             }
             .padding(20)
             .frame(maxWidth: .infinity, alignment: .leading)

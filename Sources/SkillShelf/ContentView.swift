@@ -32,13 +32,15 @@ struct ContentView: View {
         }
         .searchable(text: $model.search, placement: .toolbar, prompt: "Search skills")
         .toolbar {
-            ToolbarItem {
+            ToolbarItemGroup {
                 Button {
                     Task { await model.refresh() }
                 } label: {
                     Label("Refresh", systemImage: "arrow.clockwise")
                 }
+                .help("Refresh (⌘R)")
                 .disabled(model.isScanning)
+                SkillActions(entry: model.selectedRow?.entry)
             }
         }
         .sheet(item: $model.deleteRequest) { DeleteSheet(request: $0) }
@@ -80,6 +82,11 @@ struct SkillTable: View {
                     KindBadge(row: row)
                 }
                 .width(min: 90, ideal: 110)
+            }
+            .contextMenu(forSelectionType: String.self) { ids in
+                if let id = ids.first, let entry = model.snapshot.entry(id: id) {
+                    SkillMenuItems(entry: entry)
+                }
             }
             if let note = statusLine {
                 Text(note)
@@ -133,5 +140,55 @@ struct KindBadge: View {
         case .plugin: return .purple
         case .none: return entry.isSymlink ? .blue : .green
         }
+    }
+}
+
+struct SkillActions: View {
+    @Environment(AppModel.self) private var model
+    let entry: SkillEntry?
+
+    var body: some View {
+        Button {
+            if let entry { model.requestPush(entry) }
+        } label: {
+            Label("Push to all harnesses", systemImage: "square.and.arrow.up.on.square")
+        }
+        .help("Push to all harnesses")
+        .disabled(entry == nil || model.isWorking)
+        Button {
+            if let entry { model.requestDelete(entry) }
+        } label: {
+            Label("Delete", systemImage: "trash")
+        }
+        .help("Delete (⌘⌫)")
+        .keyboardShortcut(.delete, modifiers: .command)
+        .disabled(entry == nil || model.isWorking)
+        Menu {
+            if let entry {
+                Button("Reveal in Finder") { model.reveal(entry) }
+                Button("Open SKILL.md") { model.openSkillFile(entry) }
+                    .disabled(entry.isBroken)
+            }
+        } label: {
+            Label("More", systemImage: "ellipsis.circle")
+        }
+        .help("More")
+        .disabled(entry == nil)
+    }
+}
+
+struct SkillMenuItems: View {
+    @Environment(AppModel.self) private var model
+    let entry: SkillEntry
+
+    var body: some View {
+        Button("Push to All Harnesses") { model.requestPush(entry) }
+            .disabled(model.isWorking)
+        Button("Delete…", role: .destructive) { model.requestDelete(entry) }
+            .disabled(model.isWorking)
+        Divider()
+        Button("Reveal in Finder") { model.reveal(entry) }
+        Button("Open SKILL.md") { model.openSkillFile(entry) }
+            .disabled(entry.isBroken)
     }
 }
