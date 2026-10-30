@@ -5,16 +5,19 @@ public struct CaptureAdapter: Sendable {
     public let tool: String
     public let format: CaptureFormat
     public let unixSockets: [String]
+    public let cleanupPaths: @Sendable (_ home: String, _ cwd: String, _ sentinel: String) -> [String]
     public let launch: @Sendable (_ baseURL: String, _ sentinel: String) -> (arguments: [String], environment: [String: String])
 
     public init(
         harness: HarnessID, tool: String, format: CaptureFormat, unixSockets: [String],
+        cleanupPaths: @escaping @Sendable (_ home: String, _ cwd: String, _ sentinel: String) -> [String] = { _, _, _ in [] },
         launch: @escaping @Sendable (_ baseURL: String, _ sentinel: String) -> (arguments: [String], environment: [String: String])
     ) {
         self.harness = harness
         self.tool = tool
         self.format = format
         self.unixSockets = unixSockets
+        self.cleanupPaths = cleanupPaths
         self.launch = launch
     }
 }
@@ -25,8 +28,10 @@ public enum CaptureAdapters {
     public static func adapter(for harness: HarnessID) -> CaptureAdapter? {
         switch harness {
         case .claude:
-            CaptureAdapter(harness: harness, tool: "claude", format: .anthropic, unixSockets: []) { baseURL, sentinel in
-                (["-p", sentinel], ["ANTHROPIC_BASE_URL": baseURL, "ANTHROPIC_API_KEY": placeholder])
+            CaptureAdapter(
+                harness: harness, tool: "claude", format: .anthropic, unixSockets: [], cleanupPaths: claudeProjectPaths
+            ) { baseURL, sentinel in
+                (["-p", "--no-session-persistence", sentinel], ["ANTHROPIC_BASE_URL": baseURL, "ANTHROPIC_API_KEY": placeholder])
             }
         case .codex:
             CaptureAdapter(harness: harness, tool: "codex", format: .openAI, unixSockets: []) { baseURL, sentinel in
@@ -37,7 +42,7 @@ public enum CaptureAdapters {
                     "-c", "model_providers.skillshelf.wire_api=\"responses\"",
                     "-c", "model_providers.skillshelf.env_key=\"SKILLSHELF_API_KEY\"",
                     "-c", "model_providers.skillshelf.supports_websockets=false",
-                    "exec", "--skip-git-repo-check", sentinel
+                    "exec", "--ephemeral", "--skip-git-repo-check", sentinel
                 ], ["SKILLSHELF_API_KEY": placeholder])
             }
         case .opencode:
@@ -52,11 +57,22 @@ public enum CaptureAdapters {
                     ]]
                 ]
                 let data = try! JSONSerialization.data(withJSONObject: config, options: [.sortedKeys])
-                return (["run", sentinel], ["OPENCODE_CONFIG_CONTENT": String(decoding: data, as: UTF8.self)])
+                return (["run", sentinel], ["OPENCODE_CONFIG_CONTENT": String(decoding: data, as: UTF8.self), "OPENCODE_DB": ":memory:"])
             }
         case .grok, .muse, .cursor, .antigravity:
             nil
         }
+    }
+
+    private static func claudeProjectPaths(home: String, cwd: String, sentinel: String) -> [String] {
+        let prefix = "skillshelf-capture-"
+        let name = URL(fileURLWithPath: cwd).lastPathComponent
+        guard home.hasPrefix("/"), cwd.hasPrefix("/"), name.hasPrefix(prefix),
+              UUID(uuidString: String(name.dropFirst(prefix.count))) != nil else { return [] }
+        let canonical = URL(fileURLWithPath: cwd).resolvingSymlinksInPath().path
+        return Set([cwd, canonical]).map { path in
+            home + "/.claude/projects/" + path.replacingOccurrences(of: "[^a-zA-Z0-9]", with: "-", options: .regularExpression)
+        }.sorted()
     }
 
     public static func unavailableReason(for harness: HarnessID) -> String? {

@@ -35,6 +35,7 @@ public actor PromptCapture {
         let stop = AsyncStream<Void>.makeStream()
         return try await withTaskCancellationHandler {
             var process: (any CaptureProcessHandle)?
+            var home = NSHomeDirectory()
             do {
                 try Task.checkCancellation()
                 let executable = await resolveTool(adapter.tool)
@@ -45,6 +46,7 @@ public actor PromptCapture {
                 try await CaptureSandbox.verify(port: port, unixSockets: adapter.unixSockets)
                 try Task.checkCancellation()
                 var environment = CaptureEnvironment.sanitized(await loginEnvironment())
+                home = environment["HOME"] ?? NSHomeDirectory()
                 try Task.checkCancellation()
                 let launch = adapter.launch("http://127.0.0.1:\(port)", sentinel)
                 environment.merge(launch.environment) { _, adapterValue in adapterValue }
@@ -57,7 +59,8 @@ public actor PromptCapture {
                 let handle = try launcher.launch(argv: argv, environment: environment, cwd: directory)
                 process = handle
                 let requests = await collect(listener: listener, process: handle, sentinel: sentinel, stop: stop)
-                try await cleanUp(process: handle, listener: listener, directory: directory)
+                try await cleanUp(process: handle, listener: listener, directory: directory, adapter: adapter, home: home, sentinel: sentinel)
+                process = nil
                 try Task.checkCancellation()
                 guard !requests.isEmpty else { throw CaptureError.noRequest(version: version) }
                 let diagnostics = await handle.diagnostics()
@@ -76,7 +79,7 @@ public actor PromptCapture {
                 return try record.save(to: URL(fileURLWithPath: capturesRoot, isDirectory: true)
                     .appendingPathComponent(adapter.harness.rawValue).path)
             } catch {
-                try await cleanUp(process: process, listener: listener, directory: directory)
+                try await cleanUp(process: process, listener: listener, directory: directory, adapter: adapter, home: home, sentinel: sentinel)
                 try Task.checkCancellation()
                 throw error
             }
@@ -124,13 +127,19 @@ public actor PromptCapture {
     }
 
     private func cleanUp(
-        process: (any CaptureProcessHandle)?, listener: CaptureListener, directory: String
+        process: (any CaptureProcessHandle)?, listener: CaptureListener, directory: String,
+        adapter: CaptureAdapter, home: String, sentinel: String
     ) async throws {
         if let process {
             await process.terminate()
             _ = await process.exitStatus()
         }
         await listener.stop()
+        if process != nil {
+            for path in adapter.cleanupPaths(home, directory, sentinel) where FileManager.default.fileExists(atPath: path) {
+                try FileManager.default.removeItem(atPath: path)
+            }
+        }
         if FileManager.default.fileExists(atPath: directory) {
             try FileManager.default.removeItem(atPath: directory)
         }

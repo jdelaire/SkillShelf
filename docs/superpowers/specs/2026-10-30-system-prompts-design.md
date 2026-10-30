@@ -40,15 +40,15 @@ On this Mac `~/.claude/CLAUDE.md` is a symlink to `~/.codex/AGENTS.md`, and Open
 
 ### Capture adapters
 
-| Harness | Redirect and credential | Command | Unix socket exceptions | Status |
-| --- | --- | --- | --- | --- |
-| Claude Code | env `ANTHROPIC_BASE_URL`, placeholder `ANTHROPIC_API_KEY` | `claude -p <sentinel>` | None | Verified on this Mac with a placeholder; main request found, 12 tools |
-| Codex | `-c model_provider=skillshelf`, `-c model_providers.skillshelf.base_url=<url>/v1`, `wire_api="responses"`, `env_key` naming a placeholder variable, WebSockets off | `codex exec --skip-git-repo-check <sentinel>` | None | Verified on this Mac with a placeholder; main request found, 4 tools in `input` items of type `additional_tools` on 0.164.0 |
-| OpenCode | env `OPENCODE_CONFIG_CONTENT` adding provider `skillshelf` with `options.baseURL` and a placeholder `apiKey`, selected as the model | `opencode run <sentinel>` | None | Verified on this Mac with a placeholder; main request found, 10 tools |
-| Grok | Tried env `GROK_CLI_CHAT_PROXY_BASE_URL=<url>/v1`, placeholder `XAI_API_KEY`; `GROK_AUTH_PATH=/dev/null` excludes stored login | `grok -p <sentinel>` | None | Disabled, `unavailable("Requires real login")`; no request within 60 s with the placeholder, no stderr diagnostics |
-| Muse Code | `--base-url`; installed 1.4.14 `exec --help` exposes `--api-key-stdin`, no key environment variable | `muse exec --base-url <url> <sentinel>` | None | Disabled, `unavailable("Placeholder key needs --api-key-stdin, not supported yet")`; CaptureProcess supplies null stdin |
-| Cursor | | | None | `unavailable("Prompt is assembled on Cursor's servers")` |
-| Antigravity | | | None | `unavailable("No verified local redirect")` |
+| Harness | Redirect and credential | Command | Unix socket exceptions | Session history | Status |
+| --- | --- | --- | --- | --- | --- |
+| Claude Code | env `ANTHROPIC_BASE_URL`, placeholder `ANTHROPIC_API_KEY` | `claude -p --no-session-persistence <sentinel>` | None | Persistence disabled; after process exit, remove only the project directory named from this run's unique temporary cwd, including its canonical path spelling | Verified on this Mac with a placeholder; main request found, 12 tools |
+| Codex | `-c model_provider=skillshelf`, `-c model_providers.skillshelf.base_url=<url>/v1`, `wire_api="responses"`, `env_key` naming a placeholder variable, WebSockets off | `codex exec --ephemeral --skip-git-repo-check <sentinel>` | None | `--ephemeral` disables session files; no shared history paths are selected for cleanup | Verified on this Mac with a placeholder; main request found, 4 tools in `input` items of type `additional_tools` on 0.164.0 |
+| OpenCode | env `OPENCODE_CONFIG_CONTENT` adding provider `skillshelf` with `options.baseURL` and a placeholder `apiKey`, selected as the model | `opencode run <sentinel>` | None | `run --help` has no no-persistence flag; env `OPENCODE_DB=:memory:` keeps the capture session in memory, leaving the user's shared SQLite history untouched | Verified on this Mac with a placeholder; main request found, 10 tools |
+| Grok | Tried env `GROK_CLI_CHAT_PROXY_BASE_URL=<url>/v1`, placeholder `XAI_API_KEY`; `GROK_AUTH_PATH=/dev/null` excludes stored login | `grok -p <sentinel>` | None | Disabled | Disabled, `unavailable("Requires real login")`; no request within 60 s with the placeholder, no stderr diagnostics |
+| Muse Code | `--base-url`; installed 1.4.14 `exec --help` exposes `--api-key-stdin`, no key environment variable | `muse exec --base-url <url> <sentinel>` | None | Disabled | Disabled, `unavailable("Placeholder key needs --api-key-stdin, not supported yet")`; CaptureProcess supplies null stdin |
+| Cursor | | | None | Disabled | `unavailable("Prompt is assembled on Cursor's servers")` |
+| Antigravity | | | None | Disabled | `unavailable("No verified local redirect")` |
 
 Each adapter's flags are confirmed against the installed version during implementation. An adapter is enabled only after it has captured a request with a placeholder credential on this Mac.
 
@@ -206,5 +206,6 @@ Add a "System prompts" section to `docs/plan.md` summarizing the tables above, a
 - Codex `models_cache.json` reflects server-delivered templates and can differ from the release's bundled prompt.
 - Captures miss provider-side additions and anything from remote MCP servers.
 - Hooks and stdio MCP servers run during a capture with the user's config. Their local side effects happen as in a normal session.
+- Session-persistence controls depend on the installed harness version. Capture disables conversation history, but shared diagnostic logs, caches, and hook or MCP side effects can still retain run metadata. Shared files are never edited or deleted to remove that metadata.
 - Blocking Unix sockets can break a hook or MCP server that needs one; the capture then lacks its text.
 - Placeholder auth can differ from subscription auth in small ways.

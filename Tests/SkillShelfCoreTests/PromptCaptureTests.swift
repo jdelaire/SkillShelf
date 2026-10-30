@@ -8,7 +8,7 @@ struct PromptCaptureTests {
     @Test func claudeAdapterBuildsPlaceholderLaunch() throws {
         let adapter = try #require(CaptureAdapters.adapter(for: .claude))
         let launch = adapter.launch("http://127.0.0.1:9", "S")
-        #expect(launch.arguments == ["-p", "S"])
+        #expect(launch.arguments == ["-p", "--no-session-persistence", "S"])
         #expect(launch.environment["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:9")
         #expect(launch.environment["ANTHROPIC_API_KEY"] == "skillshelf-placeholder")
     }
@@ -16,7 +16,7 @@ struct PromptCaptureTests {
     @Test func codexAdapterRedirectsResponsesWithWebSocketsDisabled() throws {
         let adapter = try #require(CaptureAdapters.adapter(for: .codex))
         let launch = adapter.launch("http://127.0.0.1:9", "S")
-        #expect(launch.arguments.suffix(3) == ["exec", "--skip-git-repo-check", "S"])
+        #expect(launch.arguments.suffix(4) == ["exec", "--ephemeral", "--skip-git-repo-check", "S"])
         #expect(launch.arguments.contains("model_provider=skillshelf"))
         #expect(launch.arguments.contains("model_providers.skillshelf.base_url=\"http://127.0.0.1:9/v1\""))
         #expect(launch.arguments.contains("model_providers.skillshelf.wire_api=\"responses\""))
@@ -29,6 +29,7 @@ struct PromptCaptureTests {
         let adapter = try #require(CaptureAdapters.adapter(for: .opencode))
         let launch = adapter.launch("http://127.0.0.1:9", "S")
         #expect(launch.arguments == ["run", "S"])
+        #expect(launch.environment["OPENCODE_DB"] == ":memory:")
         let text = try #require(launch.environment["OPENCODE_CONFIG_CONTENT"])
         let config = try #require(JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
         let providers = try #require(config["provider"] as? [String: Any])
@@ -49,6 +50,31 @@ struct PromptCaptureTests {
         #expect(CaptureAdapters.adapter(for: .antigravity) == nil)
         #expect(CaptureAdapters.unavailableReason(for: .antigravity) == "No verified local redirect")
         #expect(CaptureAdapters.unavailableReason(for: .claude) == nil)
+    }
+
+    @Test func claudeCleanupSelectsOnlyUniqueCaptureProjectPaths() throws {
+        let fixture = try Fixture(installed: [])
+        defer { fixture.remove() }
+        let adapter = try #require(CaptureAdapters.adapter(for: .claude))
+        let cwd = "/tmp/skillshelf-capture-11111111-1111-1111-1111-111111111111"
+        #expect(adapter.cleanupPaths(fixture.home, cwd, "SKILLSHELF_CAPTURE_TEST") == [
+            fixture.home + "/.claude/projects/-tmp-skillshelf-capture-11111111-1111-1111-1111-111111111111"
+        ])
+        for unrelated in ["/Users/person/project", "/tmp/skillshelf-capture-not-a-uuid", "/", "relative"] {
+            #expect(adapter.cleanupPaths(fixture.home, unrelated, "SKILLSHELF_CAPTURE_TEST").isEmpty)
+        }
+    }
+
+    @Test(arguments: [HarnessID.codex, .opencode])
+    func nativePersistenceAdaptersNeverSelectSharedHistoryForCleanup(harness: HarnessID) throws {
+        let fixture = try Fixture(installed: [])
+        defer { fixture.remove() }
+        try fixture.write(".codex/sessions/existing.jsonl", "SKILLSHELF_CAPTURE_TEST")
+        try fixture.write(".local/share/opencode/opencode.db", "SKILLSHELF_CAPTURE_TEST")
+        let adapter = try #require(CaptureAdapters.adapter(for: harness))
+        #expect(adapter.cleanupPaths(
+            fixture.home, "/tmp/skillshelf-capture-11111111-1111-1111-1111-111111111111", "SKILLSHELF_CAPTURE_TEST"
+        ).isEmpty)
     }
 
     @Test func mcpFailureLinesBecomeNotes() {
@@ -92,6 +118,49 @@ struct PromptCaptureTests {
         #expect(!(try String(contentsOfFile: path, encoding: .utf8)).localizedCaseInsensitiveContains("user-agent"))
         #expect(try FileManager.default.attributesOfItem(atPath: path)[.posixPermissions] as? Int == 0o600)
         #expect(try FileManager.default.attributesOfItem(atPath: dir.path + "/captures/claude")[.posixPermissions] as? Int == 0o700)
+        try expectCleanup(dir, launcher: launcher)
+    }
+
+    @Test(arguments: ["found", "noRequest", "cancelled"])
+    func claudeSessionCleanupWaitsForProcessExit(outcome: String) async throws {
+        let dir = try TempDir()
+        defer { dir.remove() }
+        try FileManager.default.createDirectory(atPath: dir.path + "/.claude/projects/unrelated", withIntermediateDirectories: true)
+        let script = try script(dir, """
+        for sentinel in "$@"; do :; done
+        project=$(/bin/pwd -P | /usr/bin/sed 's/[^a-zA-Z0-9]/-/g')
+        artifact="$HOME/.claude/projects/$project"
+        /bin/mkdir -p "$artifact"
+        echo "$sentinel" > "$artifact/session.jsonl"
+        trap 'echo stopped > "$artifact/late.jsonl"; exit 0' TERM
+        echo ready > "$HOME/ready"
+        if [ "$OUTCOME" = found ]; then
+            /usr/bin/curl --noproxy '*' -s -X POST "$ANTHROPIC_BASE_URL/v1/messages" -d "{\\"tools\\":[{}],\\"input\\":\\"$sentinel\\"}"
+        fi
+        sleep 60
+        """)
+        let launcher = RecordingLauncher()
+        let capture = capture(dir, script: script, launcher: launcher, timeout: .seconds(1), environment: [
+            "PATH": "/usr/bin:/bin", "HOME": dir.path, "OUTCOME": outcome
+        ])
+        let adapter = try #require(CaptureAdapters.adapter(for: .claude))
+        let task = Task { try await capture.run(adapter, version: nil) }
+        if outcome == "cancelled" {
+            do {
+                try await waitForFile(dir.path + "/ready", timeout: .seconds(10))
+            } catch {
+                task.cancel()
+                _ = await task.result
+                throw error
+            }
+            task.cancel()
+            await #expect(throws: CancellationError.self) { try await task.value }
+        } else if outcome == "noRequest" {
+            await #expect(throws: CaptureError.noRequest(version: nil)) { try await task.value }
+        } else {
+            _ = try await task.value
+        }
+        #expect(try FileManager.default.contentsOfDirectory(atPath: dir.path + "/.claude/projects") == ["unrelated"])
         try expectCleanup(dir, launcher: launcher)
     }
 
