@@ -14,6 +14,7 @@ let package = Package(
     ],
     targets: [
         .target(name: "SkillShelfCore"),
+        .executableTarget(name: "SandboxProbe"),
         .executableTarget(
             name: "SkillShelf",
             dependencies: [
@@ -23,6 +24,6 @@ let package = Package(
             ],
             linkerSettings: [.unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"])]
         ),
-        .testTarget(name: "SkillShelfCoreTests", dependencies: ["SkillShelfCore"]),
+        .testTarget(name: "SkillShelfCoreTests", dependencies: ["SkillShelfCore", "SandboxProbe"]),
     ]
 )
