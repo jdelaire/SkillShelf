@@ -61,7 +61,8 @@ public enum CaptureParser {
         if let tools = object["tools"] as? [Any] {
             result.toolsJSON = prettyJSON(tools)
             result.tools = tools.compactMap { item in
-                guard let tool = item as? [String: Any], let name = tool["name"] as? String else { return nil }
+                guard let tool = item as? [String: Any],
+                      let name = tool["name"] as? String ?? tool["type"] as? String else { return nil }
                 let description = tool["description"] as? String ?? ""
                 return (name: name, summary: String(description.prefix { !$0.isNewline }))
             }

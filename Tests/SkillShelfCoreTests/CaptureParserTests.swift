@@ -50,6 +50,24 @@ struct CaptureParserTests {
         #expect(sections.messages.map(\.text) == ["hello"])
     }
 
+    @Test func responsesBuiltInToolFallsBackToType() {
+        let body = #"{"input":"hi","tools":[{"type":"web_search"}]}"#
+        let sections = CaptureParser.sections(body)
+        #expect(CaptureParser.hasTools(body))
+        #expect(sections.tools.map(\.name) == ["web_search"])
+        #expect(sections.tools.map(\.summary) == [""])
+    }
+
+    @Test func responsesMixedToolsPreserveNamesTypesAndOrder() throws {
+        let sections = CaptureParser.sections(#"{"input":"hi","tools":[{"type":"web_search"},{"type":"function","name":"shell","description":"Run.\nMore"},{"type":"file_search","description":"Search.\nMore"}]}"#)
+        #expect(sections.tools.map(\.name) == ["web_search", "shell", "file_search"])
+        #expect(sections.tools.map(\.summary) == ["", "Run.", "Search."])
+        let toolsJSON = try #require(sections.toolsJSON)
+        let tools = try #require(JSONSerialization.jsonObject(with: Data(toolsJSON.utf8)) as? [[String: Any]])
+        #expect(tools.map { $0["type"] as? String } == ["web_search", "function", "file_search"])
+        #expect(tools.map { $0["name"] as? String } == [nil, "shell", nil])
+    }
+
     @Test func toolsWithoutDescriptionHaveEmptySummary() {
         let sections = CaptureParser.sections(#"{"input":[],"tools":[{"name":"shell"}]}"#)
         #expect(sections.tools.map(\.name) == ["shell"])
