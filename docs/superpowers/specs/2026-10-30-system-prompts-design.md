@@ -67,7 +67,7 @@ public enum PromptStatus: Sendable, Hashable {
 
 public enum PromptSource: Sendable, Hashable {
     case file(path: String, key: String?)
-    case remote(url: URL)
+    case remote(url: URL, cache: String?)
     case capture(path: String)
     case none
 }
