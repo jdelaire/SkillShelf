@@ -61,7 +61,8 @@ public enum CaptureAdapters {
 
     public static func unavailableReason(for harness: HarnessID) -> String? {
         switch harness {
-        case .grok, .muse: "Requires real login"
+        case .grok: "Requires real login"
+        case .muse: "Placeholder key needs --api-key-stdin, not supported yet"
         case .cursor: "Prompt is assembled on Cursor's servers"
         case .antigravity: "No verified local redirect"
         case .claude, .codex, .opencode: nil
@@ -71,13 +72,18 @@ public enum CaptureAdapters {
 
 public enum DiagnosticNotes {
     public static func mcpFailures(_ text: String) -> [String] {
-        let pattern = #"(?i)mcp.*?\b(server\s+)?["'“]?([\w.-]+)["'”]?.*\b(fail|error|could not connect|unable)"#
+        let pattern = #"(?i)\bmcp(?:\s+server\s+|\]\s*|:\s*)["'“]?([\w.-]+)["'”]?.*\b(fail|error|could not connect|unable)"#
         guard let expression = try? NSRegularExpression(pattern: pattern) else { return [] }
         return text.split(whereSeparator: \.isNewline).compactMap { line in
             let line = String(line)
-            guard let match = expression.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
-                  let range = Range(match.range(at: 2), in: line) else { return nil }
-            return "MCP server \(line[range]) failed"
+            if let match = expression.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
+               let range = Range(match.range(at: 1), in: line) {
+                return "MCP server \(line[range]) failed"
+            }
+            guard line.range(of: #"(?i)\brmcp::.*\b(fatal|fail|error)"#, options: .regularExpression) != nil,
+                  let range = line.range(of: #"https?://[^"'\s<>)]{1,}"#, options: .regularExpression),
+                  let host = URL(string: String(line[range]))?.host else { return nil }
+            return "MCP server \(host) failed"
         }
     }
 }

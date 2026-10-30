@@ -40,10 +40,10 @@ struct PromptCaptureTests {
     }
 
     @Test func unavailableAdaptersExplainWhy() {
-        for harness in [HarnessID.grok, .muse] {
-            #expect(CaptureAdapters.adapter(for: harness) == nil)
-            #expect(CaptureAdapters.unavailableReason(for: harness) == "Requires real login")
-        }
+        #expect(CaptureAdapters.adapter(for: .grok) == nil)
+        #expect(CaptureAdapters.unavailableReason(for: .grok) == "Requires real login")
+        #expect(CaptureAdapters.adapter(for: .muse) == nil)
+        #expect(CaptureAdapters.unavailableReason(for: .muse) == "Placeholder key needs --api-key-stdin, not supported yet")
         #expect(CaptureAdapters.adapter(for: .cursor) == nil)
         #expect(CaptureAdapters.unavailableReason(for: .cursor) == "Prompt is assembled on Cursor's servers")
         #expect(CaptureAdapters.adapter(for: .antigravity) == nil)
@@ -58,6 +58,13 @@ struct PromptCaptureTests {
         #expect(DiagnosticNotes.mcpFailures("mcp server 'a.b-c' unable to start\nMCP server “remote” could not connect\nMCP server ok connected\nordinary error") == [
             "MCP server a.b-c failed", "MCP server remote failed"
         ])
+    }
+
+    @Test func mcpTransportFailuresNameEndpointInsteadOfLoggerModule() {
+        let diagnostics = #"2026-10-30T23:25:47.761500Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Client(HttpRequest(HttpRequest("http/request failed: error sending request for url (https://user:placeholder@example.test/mcp?key=placeholder)")))"#
+        #expect(DiagnosticNotes.mcpFailures(diagnostics) == ["MCP server example.test failed"])
+        #expect(DiagnosticNotes.mcpFailures("ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed").isEmpty)
+        #expect(DiagnosticNotes.mcpFailures("rmcp::transport::worker: connected to https://example.test/mcp").isEmpty)
     }
 
     @Test func captureStopsOnSentinelRequestAndCleansUp() async throws {

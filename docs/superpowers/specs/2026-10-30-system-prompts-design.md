@@ -40,15 +40,15 @@ On this Mac `~/.claude/CLAUDE.md` is a symlink to `~/.codex/AGENTS.md`, and Open
 
 ### Capture adapters
 
-| Harness | Redirect and credential | Command | Status |
-| --- | --- | --- | --- |
-| Claude Code | env `ANTHROPIC_BASE_URL`, placeholder `ANTHROPIC_API_KEY` | `claude -p <sentinel>` | Verified with a placeholder |
-| Codex | `-c model_provider=skillshelf`, `-c model_providers.skillshelf.base_url=<url>/v1`, `wire_api="responses"`, `env_key` naming a placeholder variable, WebSockets off | `codex exec --skip-git-repo-check <sentinel>` | Verified |
-| OpenCode | env `OPENCODE_CONFIG_CONTENT` adding provider `skillshelf` with `options.baseURL` and a placeholder `apiKey`, selected as the model | `opencode run <sentinel>` | Verified with a placeholder |
-| Grok | env `GROK_CLI_CHAT_PROXY_BASE_URL` plus a placeholder credential | `grok -p <sentinel>` | Enabled only if implementation confirms a placeholder works; otherwise `unavailable("Requires real login")` |
-| Muse Code | `--base-url` plus a placeholder key | `muse exec --base-url <url> <sentinel>` | Enabled only if implementation confirms the placeholder recipe; otherwise unavailable |
-| Cursor | | | `unavailable("Prompt is assembled on Cursor's servers")` |
-| Antigravity | | | `unavailable("No verified local redirect")` |
+| Harness | Redirect and credential | Command | Unix socket exceptions | Status |
+| --- | --- | --- | --- | --- |
+| Claude Code | env `ANTHROPIC_BASE_URL`, placeholder `ANTHROPIC_API_KEY` | `claude -p <sentinel>` | None | Verified on this Mac with a placeholder; main request found, 12 tools |
+| Codex | `-c model_provider=skillshelf`, `-c model_providers.skillshelf.base_url=<url>/v1`, `wire_api="responses"`, `env_key` naming a placeholder variable, WebSockets off | `codex exec --skip-git-repo-check <sentinel>` | None | Verified on this Mac with a placeholder; main request found, 4 tools in `input` items of type `additional_tools` on 0.164.0 |
+| OpenCode | env `OPENCODE_CONFIG_CONTENT` adding provider `skillshelf` with `options.baseURL` and a placeholder `apiKey`, selected as the model | `opencode run <sentinel>` | None | Verified on this Mac with a placeholder; main request found, 10 tools |
+| Grok | Tried env `GROK_CLI_CHAT_PROXY_BASE_URL=<url>/v1`, placeholder `XAI_API_KEY`; `GROK_AUTH_PATH=/dev/null` excludes stored login | `grok -p <sentinel>` | None | Disabled, `unavailable("Requires real login")`; no request within 60 s with the placeholder, no stderr diagnostics |
+| Muse Code | `--base-url`; installed 1.4.14 `exec --help` exposes `--api-key-stdin`, no key environment variable | `muse exec --base-url <url> <sentinel>` | None | Disabled, `unavailable("Placeholder key needs --api-key-stdin, not supported yet")`; CaptureProcess supplies null stdin |
+| Cursor | | | None | `unavailable("Prompt is assembled on Cursor's servers")` |
+| Antigravity | | | None | `unavailable("No verified local redirect")` |
 
 Each adapter's flags are confirmed against the installed version during implementation. An adapter is enabled only after it has captured a request with a placeholder credential on this Mac.
 
