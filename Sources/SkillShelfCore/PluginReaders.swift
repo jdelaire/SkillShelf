@@ -101,20 +101,10 @@ public enum PluginReaders {
     public static func grokCompat(config: String?) -> GrokCompat {
         var compat = GrokCompat()
         guard let config else { return compat }
-        var section = ""
-        for raw in config.split(separator: "\n") {
-            let line = raw.trimmingCharacters(in: .whitespaces)
-            if line.hasPrefix("[") {
-                section = line.trimmingCharacters(in: CharacterSet(charactersIn: "[] "))
-                if section == "skills" { compat.hasSkillsSection = true }
-                continue
-            }
-            let parts = line.split(separator: "=", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
-            guard parts.count == 2, parts[0] == "skills" else { continue }
-            let value = parts[1].hasPrefix("false")
-            if section == "compat.claude" { compat.claudeSkills = !value }
-            if section == "compat.cursor" { compat.cursorSkills = !value }
-        }
+        let toml = TOMLKeys(config)
+        compat.claudeSkills = toml.bool("compat.claude.skills") ?? true
+        compat.cursorSkills = toml.bool("compat.cursor.skills") ?? true
+        compat.hasSkillsSection = toml.sections.contains("skills")
         return compat
     }
 }
