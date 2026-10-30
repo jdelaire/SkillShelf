@@ -58,7 +58,7 @@ public enum CaptureParser {
             return CaptureSections(raw: prettyJSON(json) ?? body)
         }
 
-        if let tools = object["tools"] as? [Any] {
+        if let tools = tools(in: object) {
             result.toolsJSON = prettyJSON(tools)
             result.tools = tools.compactMap { item in
                 guard let tool = item as? [String: Any],
@@ -72,8 +72,19 @@ public enum CaptureParser {
 
     public static func hasTools(_ body: String) -> Bool {
         guard let object = try? JSONSerialization.jsonObject(with: Data(body.utf8)) as? [String: Any],
-              let tools = object["tools"] as? [Any] else { return false }
+              let tools = tools(in: object) else { return false }
         return !tools.isEmpty
+    }
+
+    private static func tools(in object: [String: Any]) -> [Any]? {
+        var tools = object["tools"] as? [Any]
+        for value in object["input"] as? [Any] ?? [] {
+            guard let item = value as? [String: Any], item["type"] as? String == "additional_tools",
+                  let additional = item["tools"] as? [Any] else { continue }
+            if tools == nil { tools = [] }
+            tools?.append(contentsOf: additional)
+        }
+        return tools
     }
 
     private static func textBlocks(_ content: Any?) -> [String] {

@@ -68,6 +68,43 @@ struct CaptureParserTests {
         #expect(tools.map { $0["name"] as? String } == [nil, "shell", nil])
     }
 
+    @Test func responsesAdditionalToolsSelectMainRequest() throws {
+        let body = #"{"input":[{"type":"additional_tools","role":"developer","tools":[{"type":"function","name":"shell","description":"Run.\nMore","parameters":{"type":"object"}},{"type":"web_search"}]},{"type":"message","role":"user","content":"SKILLSHELF_CAPTURE_X"}]}"#
+        let request = CapturedRequest(method: "POST", path: "/v1/responses", body: body, bodyEncoding: nil)
+        #expect(CaptureParser.hasTools(body))
+        #expect(CaptureParser.mainRequest([request], sentinel: "SKILLSHELF_CAPTURE_X") == .found(0))
+        let sections = CaptureParser.sections(body)
+        #expect(sections.tools.map(\.name) == ["shell", "web_search"])
+        #expect(sections.tools.map(\.summary) == ["Run.", ""])
+        let toolsJSON = try #require(sections.toolsJSON)
+        let tools = try #require(JSONSerialization.jsonObject(with: Data(toolsJSON.utf8)) as? [[String: Any]])
+        #expect(tools.count == 2)
+        #expect((tools.first?["parameters"] as? [String: String])?["type"] == "object")
+    }
+
+    @Test func responsesAdditionalToolsMergeAfterTopLevelInInputOrder() throws {
+        let body = #"{"tools":[{"name":"first"}],"input":[{"type":"additional_tools","tools":[{"type":"web_search"},{"name":"second","description":"Search\nMore"}]},{"type":"message","tools":[{"name":"ignored"}]},{"type":"additional_tools","tools":[]},{"type":"additional_tools","tools":[{"name":"first"},{"type":"file_search"}]}]}"#
+        let sections = CaptureParser.sections(body)
+        #expect(sections.tools.map(\.name) == ["first", "web_search", "second", "first", "file_search"])
+        #expect(sections.tools.map(\.summary) == ["", "", "Search", "", ""])
+        let toolsJSON = try #require(sections.toolsJSON)
+        let tools = try #require(JSONSerialization.jsonObject(with: Data(toolsJSON.utf8)) as? [[String: Any]])
+        #expect(tools.count == 5)
+        #expect(tools.last?["type"] as? String == "file_search")
+    }
+
+    @Test(arguments: [
+        #"{"input":[{"type":"additional_tools","tools":[]}]}"#,
+        #"{"input":[{"type":"additional_tools","tools":{"name":"shell"}}]}"#,
+        #"{"input":[{"type":"message","tools":[{"name":"shell"}]}]}"#,
+        #"{"input":[{"tools":[{"name":"shell"}]}]}"#,
+        #"{"input":{"type":"additional_tools","tools":[{"name":"shell"}]}}"#
+    ])
+    func responsesAdditionalToolsRequireTypedInputArray(_ body: String) {
+        #expect(!CaptureParser.hasTools(body))
+        #expect(CaptureParser.sections(body).tools.isEmpty)
+    }
+
     @Test func toolsWithoutDescriptionHaveEmptySummary() {
         let sections = CaptureParser.sections(#"{"input":[],"tools":[{"name":"shell"}]}"#)
         #expect(sections.tools.map(\.name) == ["shell"])
