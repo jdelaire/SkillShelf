@@ -134,14 +134,14 @@ Run:
 4. Environment: the login PATH and home from the existing runner, minus every credential and proxy variable (`ANTHROPIC_*`, `OPENAI_*`, `CLAUDE_CODE_OAUTH_TOKEN`, `GEMINI_API_KEY`, `GOOGLE_*`, `XAI_*`, `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY` and their lowercase forms), plus the adapter's redirect and placeholder variables. The user's own config files are used as they are, so hooks, local MCP servers, skills and plugins contribute what they normally would. Remote MCP servers, HTTP MCP servers on other localhost ports and any other connection fail inside the sandbox, and the capture notes which MCP servers failed when the harness reports it.
 5. cwd: a new empty temp directory.
 6. Listener behavior per request:
-   - Limits: 64 KB of headers, 32 MB of body, 8 concurrent connections, 30 requests. Over a limit, the connection is closed and the capture notes it.
+   - Limits: 64 KB of headers, 32 MB of body per request, 64 MB of bodies in total, 8 concurrent connections, 30 requests. Over a limit, the connection is closed and the capture notes it.
    - Framing: `Content-Length` and `chunked`. Headers are parsed in memory for framing only and never stored or logged.
    - `Content-Encoding` other than identity: the body is stored base64-encoded with a "compressed body (<encoding>), not decoded" note.
    - WebSocket upgrades are refused.
    - Response: `400` with a body in the adapter's error format, `{"type":"error","error":{"type":"invalid_request_error","message":"SkillShelf capture"}}` for Anthropic and `{"error":{"type":"invalid_request_error","code":"skillshelf_capture","message":"SkillShelf capture"}}` for OpenAI-style. The message avoids words that clients treat as retryable.
 7. Stop: as soon as a request body contains the sentinel and a non-empty tools list, the process group is terminated. Otherwise the capture stops when the process exits or after 60 s.
 8. Cleanup, always awaited, also on cancellation through `withTaskCancellationHandler`: terminate the process group, wait for exit, close the listener and every connection, remove the temp directory.
-9. Save to `~/Library/Application Support/SkillShelf/captures/<harness>/<ISO8601 timestamp>.json`. Directories are created `0700`, files `0600`. The file holds harness, version, adapter, command without placeholder values, notes, and each request's method, path and body.
+9. Save to `~/Library/Application Support/SkillShelf/captures/<harness>/<ISO8601 timestamp>.json`. Directories are created `0700`, files `0600`. The file holds harness, version, adapter, command without placeholder values, date, notes, each request's method, path, body and optional `bodyEncoding`, and optional `diagnostics` containing the last 4 KB of harness stderr. The sentinel is stored in notes as `"sentinel: <value>"` so main request selection can be recomputed on load.
 
 Main request selection: the first request containing the sentinel and a non-empty tools list. If none has tools, the first containing the sentinel, labeled "Main request: best guess". If no request contains the sentinel, all requests are shown and the main request is "unknown". Every other request is a helper call.
 
