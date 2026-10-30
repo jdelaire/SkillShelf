@@ -134,6 +134,53 @@ struct CaptureProcessTests {
         #expect(kill(-handle.pid, 0) == -1 && errno == ESRCH)
     }
 
+    @Test(arguments: [false, true])
+    func terminateKillsDetachedDescendants(redirectOutput: Bool) async throws {
+        try await withDetachedDescendant(redirectOutput: redirectOutput) { handle, descendant, directory in
+            let start = ContinuousClock.now
+            let termination = Task {
+                await handle.terminate()
+                try Data().write(to: URL(fileURLWithPath: directory + "/terminated"))
+            }
+            do {
+                try await waitForFile(directory + "/terminated", timeout: .seconds(6))
+                #expect(ContinuousClock.now - start < .seconds(6))
+                #expect(kill(descendant, 0) == -1 && errno == ESRCH)
+                #expect(kill(-handle.pid, 0) == -1 && errno == ESRCH)
+                try await termination.value
+            } catch {
+                kill(descendant, SIGKILL)
+                try? await termination.value
+                throw error
+            }
+        }
+    }
+
+    @Test func terminateBoundsPipeDrainsAfterDescendantIsReparented() async throws {
+        try await withDetachedDescendant(redirectOutput: false) { handle, descendant, directory in
+            try Data().write(to: URL(fileURLWithPath: directory + "/orphan"))
+            #expect(await handle.exitStatus() == 0)
+            let start = ContinuousClock.now
+            let termination = Task {
+                await handle.terminate()
+                try Data().write(to: URL(fileURLWithPath: directory + "/terminated"))
+            }
+            do {
+                try await waitForFile(directory + "/terminated", timeout: .seconds(6))
+                #expect(ContinuousClock.now - start < .seconds(3))
+                #expect(kill(descendant, 0) == 0)
+                let diagnostics = await handle.diagnostics()
+                #expect(diagnostics.stdout == "detached stdout\n")
+                #expect(diagnostics.stderr == "detached stderr\n")
+                try await termination.value
+            } catch {
+                kill(descendant, SIGKILL)
+                try? await termination.value
+                throw error
+            }
+        }
+    }
+
     @Test func launchUsesExplicitEnvironmentWorkingDirectoryAndNullStdin() async throws {
         let directory = try TempDir()
         defer { directory.remove() }
@@ -182,5 +229,89 @@ struct CaptureProcessTests {
         #expect(diagnostics.stderr.utf8.count == 262_144)
         #expect(diagnostics.stdout.hasSuffix("out"))
         #expect(diagnostics.stderr.hasSuffix("err"))
+    }
+
+    @Test func diagnosticsBoundInvalidUTF8InBothStreams() async throws {
+        let handle = try SpawnLauncher().launch(
+            argv: ["/usr/bin/perl", "-e", #"print STDOUT "\xff" x 524288, "out"; print STDERR "\xff" x 524288, "err";"#],
+            environment: [:], cwd: NSTemporaryDirectory()
+        )
+        #expect(await handle.exitStatus() == 0)
+        let diagnostics = await handle.diagnostics()
+        #expect(diagnostics.stdout.utf8.count == 262_143)
+        #expect(diagnostics.stderr.utf8.count == 262_143)
+        #expect(diagnostics.stdout == String(repeating: "\u{fffd}", count: 87_380) + "out")
+        #expect(diagnostics.stderr == String(repeating: "\u{fffd}", count: 87_380) + "err")
+    }
+
+    private func withDetachedDescendant(
+        redirectOutput: Bool,
+        _ body: (any CaptureProcessHandle, pid_t, String) async throws -> Void
+    ) async throws {
+        let directory = try TempDir()
+        defer { directory.remove() }
+        let script = #"""
+        use POSIX qw(setsid pause);
+        $SIG{TERM} = 'IGNORE';
+        my $middle = fork();
+        defined($middle) or die "fork: $!";
+        if ($middle == 0) {
+            my $child = fork();
+            defined($child) or die "fork: $!";
+            if ($child == 0) {
+                until (-e 'detach') { select(undef, undef, undef, 0.01); }
+                setsid() >= 0 or die "setsid: $!";
+                if ($ARGV[0] eq 'redirect') {
+                    open(STDOUT, '>', '/dev/null') or die "stdout: $!";
+                    open(STDERR, '>', '/dev/null') or die "stderr: $!";
+                }
+                syswrite(STDOUT, "detached stdout\n");
+                syswrite(STDERR, "detached stderr\n");
+                open(my $ready, '>', 'ready') or die "ready: $!";
+                close($ready);
+                while (1) { pause(); }
+            }
+            open(my $pidfile, '>', 'descendant.tmp') or die "pidfile: $!";
+            print $pidfile "$child\n";
+            close($pidfile);
+            rename('descendant.tmp', 'descendant') or die "rename: $!";
+            until (-e 'orphan') { select(undef, undef, undef, 0.01); }
+            exit 0;
+        }
+        waitpid($middle, 0);
+        """#
+        let argv = try CaptureSandbox.wrap(
+            ["/usr/bin/perl", "-e", script, redirectOutput ? "redirect" : "inherit"], port: 9, unixSockets: []
+        )
+        let handle = try SpawnLauncher().launch(argv: argv, environment: [:], cwd: directory.path)
+        var descendant: pid_t?
+        do {
+            try await waitForFile(directory.path + "/descendant", timeout: .seconds(5))
+            let text = try String(contentsOfFile: directory.path + "/descendant", encoding: .utf8)
+            let child = try #require(pid_t(text.trimmingCharacters(in: .whitespacesAndNewlines)))
+            try #require(child > 0 && child != getpid())
+            descendant = child
+            try Data().write(to: URL(fileURLWithPath: directory.path + "/detach"))
+            try await waitForFile(directory.path + "/ready", timeout: .seconds(5))
+            #expect(getpgid(child) == child)
+            try await body(handle, child, directory.path)
+        } catch {
+            await cleanUpDetachedDescendant(handle: handle, descendant: descendant)
+            throw error
+        }
+        await cleanUpDetachedDescendant(handle: handle, descendant: descendant)
+    }
+
+    private func cleanUpDetachedDescendant(handle: any CaptureProcessHandle, descendant: pid_t?) async {
+        if let descendant { kill(descendant, SIGKILL) }
+        kill(-handle.pid, SIGKILL)
+        await handle.terminate()
+        let deadline = ContinuousClock.now + .seconds(5)
+        while let descendant, kill(descendant, 0) == 0, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        if let descendant { #expect(kill(descendant, 0) == -1 && errno == ESRCH) }
+        #expect(kill(handle.pid, 0) == -1 && errno == ESRCH)
+        #expect(kill(-handle.pid, 0) == -1 && errno == ESRCH)
     }
 }

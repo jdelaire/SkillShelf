@@ -160,14 +160,16 @@ private final class SpawnHandle: CaptureProcessHandle {
 
     init(pid: pid_t, stdout: Int32, stderr: Int32) {
         self.pid = pid
-        output = Self.drain(stdout)
-        error = Self.drain(stderr)
+        let drainDeadline = CaptureDrainDeadline()
+        output = Self.drain(stdout, deadline: drainDeadline)
+        error = Self.drain(stderr, deadline: drainDeadline)
         exit = Task.detached {
             await withCheckedContinuation { continuation in
                 DispatchQueue.global(qos: .utility).async {
                     var status: Int32 = 0
                     var result: pid_t
                     repeat { result = waitpid(pid, &status, 0) } while result < 0 && errno == EINTR
+                    drainDeadline.set(ContinuousClock.now + .seconds(2))
                     guard result == pid else {
                         continuation.resume(returning: -1)
                         return
@@ -191,16 +193,18 @@ private final class SpawnHandle: CaptureProcessHandle {
         let task = termination.withLock { task in
             if let task { return task }
             let cleanup = Task.detached { [pid, exit, output, error] in
-                if Self.groupExists(pid) {
-                    kill(-pid, SIGTERM)
-                    let deadline = ContinuousClock.now + .seconds(3)
-                    while Self.groupExists(pid), ContinuousClock.now < deadline {
-                        try? await Task.sleep(for: .milliseconds(20))
-                    }
-                    if Self.groupExists(pid) { kill(-pid, SIGKILL) }
+                let descendants = Self.descendants(of: pid)
+                Self.signal(SIGTERM, group: pid, descendants: descendants)
+                let deadline = ContinuousClock.now + .seconds(3)
+                while Self.processesExist(group: pid, descendants: descendants), ContinuousClock.now < deadline {
+                    try? await Task.sleep(for: .milliseconds(20))
+                }
+                if Self.processesExist(group: pid, descendants: descendants) {
+                    Self.signal(SIGKILL, group: pid, descendants: descendants)
                 }
                 _ = await exit.value
-                while Self.groupExists(pid) {
+                let cleanupDeadline = ContinuousClock.now + .seconds(2)
+                while Self.processesExist(group: pid, descendants: descendants), ContinuousClock.now < cleanupDeadline {
                     try? await Task.sleep(for: .milliseconds(20))
                 }
                 _ = await (output.value, error.value)
@@ -211,18 +215,62 @@ private final class SpawnHandle: CaptureProcessHandle {
         await task.value
     }
 
-    private static func groupExists(_ pid: pid_t) -> Bool {
-        kill(-pid, 0) == 0 || errno != ESRCH
+    private static func signal(_ signal: Int32, group: pid_t, descendants: [pid_t]) {
+        for descendant in descendants.reversed() { kill(descendant, signal) }
+        kill(-group, signal)
     }
 
-    private static func drain(_ descriptor: Int32) -> Task<String, Never> {
+    private static func processesExist(group: pid_t, descendants: [pid_t]) -> Bool {
+        if kill(-group, 0) == 0 || errno != ESRCH { return true }
+        return descendants.contains { kill($0, 0) == 0 || errno != ESRCH }
+    }
+
+    private static func descendants(of pid: pid_t) -> [pid_t] {
+        var query: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_ALL]
+        let stride = MemoryLayout<kinfo_proc>.stride
+        for _ in 0..<3 {
+            var size = 0
+            guard sysctl(&query, UInt32(query.count), nil, &size, nil, 0) == 0 else { return [] }
+            var processes = [kinfo_proc](repeating: kinfo_proc(), count: size / stride + 32)
+            let result = processes.withUnsafeMutableBytes { buffer in
+                size = buffer.count
+                return sysctl(&query, UInt32(query.count), buffer.baseAddress, &size, nil, 0)
+            }
+            if result != 0 {
+                if errno == ENOMEM { continue }
+                return []
+            }
+            var children: [pid_t: [pid_t]] = [:]
+            for process in processes.prefix(size / stride) where process.kp_proc.p_pid > 0 {
+                children[process.kp_eproc.e_ppid, default: []].append(process.kp_proc.p_pid)
+            }
+            var visited: Set<pid_t> = [pid]
+            var pending = [pid]
+            var descendants: [pid_t] = []
+            while let parent = pending.popLast() {
+                for child in children[parent, default: []] where visited.insert(child).inserted {
+                    descendants.append(child)
+                    pending.append(child)
+                }
+            }
+            return descendants
+        }
+        return []
+    }
+
+    private static func drain(_ descriptor: Int32, deadline: CaptureDrainDeadline) -> Task<String, Never> {
         Task.detached {
             await withCheckedContinuation { continuation in
                 DispatchQueue.global(qos: .utility).async {
                     defer { close(descriptor) }
                     var tail = CaptureTail()
                     var buffer = [UInt8](repeating: 0, count: 16_384)
-                    while true {
+                    while !deadline.expired {
+                        var descriptorState = pollfd(fd: descriptor, events: Int16(POLLIN), revents: 0)
+                        let ready = poll(&descriptorState, 1, 20)
+                        if ready < 0 && errno == EINTR { continue }
+                        if ready == 0 { continue }
+                        guard ready > 0 else { break }
                         let count = read(descriptor, &buffer, buffer.count)
                         if count < 0 && errno == EINTR { continue }
                         guard count > 0 else { break }
@@ -232,6 +280,18 @@ private final class SpawnHandle: CaptureProcessHandle {
                 }
             }
         }
+    }
+}
+
+private final class CaptureDrainDeadline: Sendable {
+    private let deadline = Mutex<ContinuousClock.Instant?>(nil)
+
+    func set(_ value: ContinuousClock.Instant) {
+        deadline.withLock { $0 = value }
+    }
+
+    var expired: Bool {
+        deadline.withLock { $0.map { ContinuousClock.now >= $0 } ?? false }
     }
 }
 
@@ -253,7 +313,11 @@ private struct CaptureTail {
     }
 
     var text: String {
-        if count < bytes.count { return String(decoding: bytes.prefix(count), as: UTF8.self) }
-        return String(decoding: bytes[offset...] + bytes[..<offset], as: UTF8.self)
+        let decoded = count < bytes.count
+            ? String(decoding: bytes.prefix(count), as: UTF8.self)
+            : String(decoding: bytes[offset...] + bytes[..<offset], as: UTF8.self)
+        guard decoded.utf8.count > bytes.count else { return decoded }
+        let suffix = decoded.utf8.suffix(bytes.count).drop(while: { $0 & 0xc0 == 0x80 })
+        return String(decoding: suffix, as: UTF8.self)
     }
 }
