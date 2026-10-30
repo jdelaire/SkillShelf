@@ -91,8 +91,10 @@ public enum InstructionReader {
             parts = antigravity(layout: layout, files: files)
         case .muse:
             parts = muse(layout: layout, environment: environment, files: files)
-        case .grok, .opencode:
-            parts = []
+        case .grok:
+            parts = grok(layout: layout, environment: environment, files: files)
+        case .opencode:
+            parts = opencode(layout: layout, files: files)
         }
         return markDuplicates(parts)
     }

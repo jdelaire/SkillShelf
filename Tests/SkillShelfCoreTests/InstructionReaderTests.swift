@@ -4,6 +4,264 @@ import Testing
 @testable import SkillShelfCore
 
 @Suite struct InstructionReaderTests {
+    @Test func grokLoadsEveryNamedFileOnceAndHonorsGrokHome() throws {
+        let f = try Fixture(); defer { f.remove() }
+        try f.write("gh/AGENTS.md", "a"); try f.write("gh/CLAUDE.local.md", "b")
+        try f.write("gh/rules/b.md", "x"); try f.write("gh/rules/a.md", "x")
+        try f.write(".claude/CLAUDE.md", "c")
+        try f.write("gh/config.toml", "[compat.claude]\nrules = false")
+        let parts = InstructionReader.parts(layout: f.layout, harness: .grok, environment: ["GROK_HOME": f.layout.path("gh")])
+        let present = parts.filter { $0.status == .present }.compactMap(\.filePath)
+        #expect(present.contains(f.layout.path("gh/AGENTS.md")) && present.contains(f.layout.path("gh/CLAUDE.local.md")))
+        #expect(present.filter { $0.hasPrefix(f.layout.path("gh/rules")) } == ["a.md", "b.md"].map { f.layout.path("gh/rules/\($0)") })
+        #expect(present.contains(f.layout.path(".claude/CLAUDE.md")))
+    }
+
+    @Test func grokCaseInsensitiveDuplicateCountsOnce() throws {
+        let f = try Fixture(); defer { f.remove() }
+        try f.write(".grok/CLAUDE.md", "x")
+        let present = InstructionReader.parts(layout: f.layout, harness: .grok).filter { $0.status == .present && $0.filePath?.hasPrefix(f.layout.path(".grok/")) == true }
+        #expect(present.count == 1)
+    }
+
+    @Test func grokCompatAgentsAndRulesSwitchesAreIndependentOfSkills() throws {
+        let f = try Fixture(); defer { f.remove() }
+        try f.write(".grok/CLAUDE.md", "native")
+        try f.write(".claude/AGENTS.md", "claude")
+        try f.write(".claude/rules/c.md", "rule")
+        try f.write(".cursor/AGENTS.md", "cursor")
+        try f.write(".cursor/rules/u.md", "rule")
+        try f.write(".grok/config.toml", """
+        [compat.claude]
+        skills = false
+        agents = false
+        rules = true
+        [compat.cursor]
+        skills = false
+        agents = true
+        rules = false
+        """)
+        let first = InstructionReader.parts(layout: f.layout, harness: .grok).filter { $0.status == .present }.compactMap(\.filePath)
+        #expect(first == [".grok/CLAUDE.md", ".cursor/AGENTS.md", ".claude/rules/c.md"].map(f.layout.path))
+        try f.write(".grok/config.toml", """
+        [compat.claude]
+        agents = true
+        rules = false
+        [compat.cursor]
+        agents = false
+        rules = true
+        """)
+        let second = InstructionReader.parts(layout: f.layout, harness: .grok).filter { $0.status == .present }.compactMap(\.filePath)
+        #expect(second == [".grok/CLAUDE.md", ".claude/AGENTS.md", ".cursor/rules/u.md"].map(f.layout.path))
+    }
+
+    @Test func grokDeduplicatesNamedFilesByDeviceAndInode() throws {
+        let f = try Fixture(); defer { f.remove() }
+        try f.write(".grok/AGENT.md", "x")
+        try FileManager.default.linkItem(atPath: f.layout.path(".grok/AGENT.md"), toPath: f.layout.path(".grok/CLAUDE.local.md"))
+        try f.link(".claude/AGENTS.md", to: "../.grok/AGENT.md")
+        let present = InstructionReader.parts(layout: f.layout, harness: .grok).filter { $0.status == .present }
+        #expect(present.count == 1)
+        #expect(present.first?.filePath == f.layout.path(".grok/CLAUDE.local.md"))
+        #expect(present.first?.notes.isEmpty == true)
+    }
+
+    @Test func grokExtraRulesAreShallowSortedAndIgnoreRelativeDirectories() throws {
+        let f = try Fixture(); defer { f.remove() }
+        try f.write(".grok/rules/z.md", "native")
+        try f.write(".claude/rules/c.md", "claude")
+        try f.write(".cursor/rules/u.md", "cursor")
+        try f.write("team/b.md", "b")
+        try f.write("team/a.md", "a")
+        try f.write("team/deep/ignored.md", "x")
+        try f.write("relative/ignored.md", "x")
+        try f.write("absolute/last.md", "last")
+        try f.write(".grok/config.toml", """
+        [paths]
+        extra_rule_dirs = ["~/team", "relative", "\(f.layout.path("absolute"))", "~/gone"]
+        """)
+        let files = InstructionFiles()
+        let parts = InstructionReader.parts(layout: f.layout, harness: .grok, files: files)
+        #expect(parts.filter { $0.status == .present }.compactMap(\.filePath) == [
+            ".grok/rules/z.md", ".claude/rules/c.md", ".cursor/rules/u.md", "team/a.md", "team/b.md", "absolute/last.md",
+        ].map(f.layout.path))
+        #expect(files.reads == 7)
+        #expect(parts.contains { $0.status == .missing && $0.filePath == f.layout.path(".grok/AGENTS.md") })
+    }
+
+    @Test func opencodeMergesConfigsAndExpandsFileSubstitution() throws {
+        let f = try Fixture(); defer { f.remove() }
+        try f.write(".config/opencode/config.json", #"{"instructions":["~/old.md"]}"#)
+        try f.write(".config/opencode/opencode.jsonc", #"{"instructions":["~/a.md","https://x.dev/r.md"],"agent":{"rev":{"prompt":"{file:./rev.txt}"}},"default_agent":"rev"}"#)
+        try f.write(".config/opencode/rev.txt", "review prompt"); try f.write("a.md", "x")
+        let parts = InstructionReader.parts(layout: f.layout, harness: .opencode)
+        #expect(parts.contains { $0.filePath == f.layout.path("a.md") })
+        #expect(!parts.contains { $0.filePath == f.layout.path("old.md") })
+        #expect(parts.contains { if case .remote = $0.source { true } else { false } })
+        let rev = try #require(parts.first { $0.layer == .agentDefinitions && $0.filePath == f.layout.path(".config/opencode/rev.txt") })
+        #expect(rev.notes.contains("via {file:} in opencode.jsonc"))
+        #expect(rev.notes.contains("Active agent"))
+    }
+
+    @Test func opencodeAgentsRecursiveAndNoActiveWithoutDefault() throws {
+        let f = try Fixture(); defer { f.remove() }
+        try f.write(".config/opencode/agents/team/deep.md", "x"); try f.write(".config/opencode/agent/old.md", "x")
+        let agents = InstructionReader.parts(layout: f.layout, harness: .opencode).filter { $0.layer == .agentDefinitions }
+        #expect(agents.filter { $0.filePath != nil }.count == 2)
+        #expect(agents.filter { $0.source == .none }.map(\.status) == [.unavailable("No default_agent set")])
+        #expect(agents.contains { $0.title == "OpenCode uses the first enabled primary agent. Capture shows which." })
+        #expect(!agents.contains { $0.notes.contains("Active agent") })
+    }
+
+    @Test func opencodeFileSubstitutionEscapesContentAndKeepsSiblings() throws {
+        let f = try Fixture(); defer { f.remove() }
+        try f.write(".config/opencode/multi.txt", "line \"one\"\nC:\\path")
+        try f.write(".config/opencode/opencode.jsonc", #"{"agent":{"a":{"prompt":"{file:./multi.txt}"},"b":{"prompt":"{file:./gone.txt}"}},"instructions":["~/x.md"]}"#)
+        let parts = InstructionReader.parts(layout: f.layout, harness: .opencode)
+        #expect(parts.contains { $0.filePath == f.layout.path(".config/opencode/multi.txt") && $0.status == .present })
+        #expect(parts.contains { $0.filePath == f.layout.path(".config/opencode/gone.txt") && $0.status == .missing })
+        #expect(parts.contains { $0.filePath == f.layout.path("x.md") })
+    }
+
+    @Test func opencodeFlagsSymlinkedDuplicate() throws {
+        let f = try Fixture(); defer { f.remove() }
+        try f.write(".codex/AGENTS.md", "x")
+        try f.link(".claude/CLAUDE.md", to: "../.codex/AGENTS.md")
+        try f.write(".config/opencode/opencode.jsonc", #"{"instructions":["~/.codex/AGENTS.md"]}"#)
+        let parts = InstructionReader.parts(layout: f.layout, harness: .opencode)
+        #expect(parts.filter { $0.notes.contains { $0.hasSuffix("loaded twice") } }.count == 2)
+    }
+
+    @Test func opencodeEnvSubstitutionIsLeftUnresolved() throws {
+        let f = try Fixture(); defer { f.remove() }
+        try f.write(".config/opencode/opencode.jsonc", #"{"agent":{"x":{"prompt":"{env:MY_PROMPT}"}}}"#)
+        let agent = InstructionReader.parts(layout: f.layout, harness: .opencode).first { $0.layer == .agentDefinitions }
+        #expect(agent?.notes.contains("Set from the environment at runtime") == true)
+        #expect(agent?.source == .file(path: f.layout.opencodeConfig, key: "agent.x.prompt"))
+    }
+
+    @Test func opencodeConfigPrecedenceKeepsWinningKeyProvenance() throws {
+        let f = try Fixture(); defer { f.remove() }
+        try f.write(".config/opencode/config.json", #"{"instructions":["~/old.md"],"agent":{"old":{"prompt":"{file:old.txt}"}},"default_agent":"fresh"}"#)
+        try f.write(".config/opencode/opencode.json", #"{"instructions":["~/middle.md"],"agent":{"fresh":{"prompt":"inline prompt"}}}"#)
+        try f.write(".config/opencode/opencode.jsonc", """
+        {
+          // Last instructions win; agent definitions survive from opencode.json.
+          "instructions": ["~/last.md",],
+        }
+        """)
+        let parts = InstructionReader.parts(layout: f.layout, harness: .opencode)
+        #expect(parts.filter { $0.layer == .instructions }.compactMap(\.filePath) == [".claude/CLAUDE.md", "last.md"].map(f.layout.path))
+        let agents = parts.filter { $0.layer == .agentDefinitions }
+        #expect(agents.count == 1)
+        #expect(agents.first?.source == .file(path: f.layout.path(".config/opencode/opencode.json"), key: "agent.fresh.prompt"))
+        #expect(agents.first?.notes == ["Replaces the base prompt when this agent is selected", "Active agent"])
+    }
+
+    @Test func opencodeInstructionsExpandGlobsAndPreserveMissingLiteralPaths() throws {
+        let f = try Fixture(); defer { f.remove() }
+        try f.write(".config/opencode/AGENTS.md", "primary")
+        try f.write(".claude/CLAUDE.md", "fallback")
+        try f.write("rules/b.md", "b")
+        try f.write("rules/a.md", "a")
+        try f.write(".config/opencode/opencode.json", #"{"instructions":["~/rules/*.md","~/absent.md","~/none/*.md","http://x.dev/plain.md","https://x.dev/secure.md"]}"#)
+        let parts = InstructionReader.parts(layout: f.layout, harness: .opencode)
+        let local = parts.filter { $0.layer == .instructions && $0.filePath != nil }
+        #expect(local.compactMap(\.filePath) == [".config/opencode/AGENTS.md", "rules/a.md", "rules/b.md", "absent.md"].map(f.layout.path))
+        #expect(local.last?.status == .missing)
+        #expect(parts.filter { if case .remote(_, nil) = $0.source { true } else { false } }.count == 2)
+    }
+
+    @Test func opencodeSubstitutionsTrackKeyPathsAndReuseCanonicalReads() throws {
+        let f = try Fixture(); defer { f.remove() }
+        try f.write("shared.txt", "line \"one\"\nC:\\path\t{env:INNER}")
+        try f.link(".config/opencode/shared.txt", to: "../../shared.txt")
+        try f.write(".config/opencode/opencode.jsonc", """
+        {
+          // {file:ignored.txt}
+          "agent": {
+            "a": {"prompt": "prefix {file:./shared.txt} suffix"},
+            "b": {"prompt": "{file:~/shared.txt}{file:missing.txt}{env:OUTER}"},
+            "inline": {"prompt": "keep me"}
+          },
+          "default_agent": "b"
+        }
+        """)
+        let files = InstructionFiles()
+        let parts = InstructionReader.parts(layout: f.layout, harness: .opencode, files: files)
+        let agents = parts.filter { $0.layer == .agentDefinitions }
+        #expect(agents.count == 4)
+        #expect(agents.filter { $0.notes.contains("Active agent") }.compactMap(\.filePath) == [f.layout.path("shared.txt"), f.layout.path(".config/opencode/missing.txt")])
+        #expect(agents.first?.notes.contains("Set from the environment at runtime") == false)
+        #expect(agents.filter { $0.notes.contains("Set from the environment at runtime") }.count == 2)
+        #expect(agents.last?.source == .file(path: f.layout.opencodeConfig, key: "agent.inline.prompt"))
+        #expect(!parts.contains { $0.filePath?.hasSuffix("ignored.txt") == true })
+        #expect(files.reads == 2)
+    }
+
+    @Test func opencodeMarkdownDefaultAgentUsesNestedNameAndFrontmatterName() throws {
+        let f = try Fixture(); defer { f.remove() }
+        try f.write(".config/opencode/agents/team/deep.md", "nested prompt")
+        try f.write(".config/opencode/agent/old.md", "---\nname: renamed\n---\nlegacy prompt")
+        try f.write(".config/opencode/opencode.jsonc", #"{"default_agent":"team/deep"}"#)
+        let first = InstructionReader.parts(layout: f.layout, harness: .opencode).filter { $0.layer == .agentDefinitions }
+        #expect(first.filter { $0.notes.contains("Active agent") }.compactMap(\.filePath) == [f.layout.path(".config/opencode/agents/team/deep.md")])
+        #expect(first.allSatisfy { $0.notes.contains("Replaces the base prompt when this agent is selected") })
+        try f.write(".config/opencode/opencode.jsonc", #"{"default_agent":"renamed"}"#)
+        let second = InstructionReader.parts(layout: f.layout, harness: .opencode).filter { $0.layer == .agentDefinitions }
+        #expect(second.filter { $0.notes.contains("Active agent") }.compactMap(\.filePath) == [f.layout.path(".config/opencode/agent/old.md")])
+    }
+
+    @Test func opencodeManySubstitutionsKeepEachInstructionSource() throws {
+        let f = try Fixture(); defer { f.remove() }
+        var instructions: [String] = []
+        for index in 0..<12 {
+            try f.write(".config/opencode/prompt-\(index).txt", "prompt \(index)")
+            instructions.append("{file:prompt-\(index).txt}")
+        }
+        let data = try JSONSerialization.data(withJSONObject: ["instructions": instructions], options: .sortedKeys)
+        try f.write(".config/opencode/opencode.jsonc", String(decoding: data, as: UTF8.self))
+        let parts = InstructionReader.parts(layout: f.layout, harness: .opencode).filter { $0.layer == .instructions }.dropFirst()
+        #expect(parts.compactMap(\.filePath) == (0..<12).map { f.layout.path(".config/opencode/prompt-\($0).txt") })
+    }
+
+    @Test func opencodeDeduplicatesInstructionPathsButKeepsSymlinkAliases() throws {
+        let f = try Fixture(); defer { f.remove() }
+        try f.write("rules/a.md", "a")
+        try f.link("alias.md", to: "rules/a.md")
+        try f.write(".config/opencode/opencode.jsonc", #"{"instructions":["~/rules/a.md","~/rules/*.md","~/rules/a.md","~/alias.md"]}"#)
+        let parts = InstructionReader.parts(layout: f.layout, harness: .opencode).filter { $0.layer == .instructions }.dropFirst()
+        #expect(parts.compactMap(\.filePath) == ["rules/a.md", "alias.md"].map(f.layout.path))
+        #expect(parts.filter { $0.notes.contains { $0.hasSuffix("loaded twice") } }.count == 2)
+    }
+
+    @Test func opencodeAgentTreeStopsAt500AndReadsOnlyFrontmatter() throws {
+        let f = try Fixture(); defer { f.remove() }
+        try f.link(".config/opencode/agents/loop", to: ".")
+        for index in 0..<501 {
+            try f.write(String(format: ".config/opencode/agents/%03d.md", index), String(repeating: "x", count: 8_192))
+        }
+        let files = InstructionFiles()
+        let agents = InstructionReader.parts(layout: f.layout, harness: .opencode, files: files).filter { $0.layer == .agentDefinitions && $0.filePath != nil }
+        #expect(agents.count == 500)
+        #expect(agents.last?.notes.contains("Stopped after 500 rule files") == true)
+        #expect(files.reads == 500)
+        let firstPath = f.layout.path(".config/opencode/agents/000.md")
+        try FileManager.default.removeItem(atPath: firstPath)
+        #expect(files.head(firstPath)?.utf8.count == 4_096)
+        #expect(files.text(firstPath) == nil)
+    }
+
+    @Test func opencodeRuntimeInstructionsRetainEachConfigKey() throws {
+        let f = try Fixture(); defer { f.remove() }
+        try f.write(".config/opencode/opencode.jsonc", #"{"instructions":["{env:FIRST}","{env:SECOND}"]}"#)
+        let parts = InstructionReader.parts(layout: f.layout, harness: .opencode).filter { $0.notes.contains("Set from the environment at runtime") }
+        #expect(parts.map(\.source) == [
+            .file(path: f.layout.opencodeConfig, key: "instructions.0"),
+            .file(path: f.layout.opencodeConfig, key: "instructions.1"),
+        ])
+    }
+
     @Test func claudeImportsRecurseFourHopsAndStopAtCycles() throws {
         let f = try Fixture(); defer { f.remove() }
         try f.write(".claude/CLAUDE.md", "See @a.md")
