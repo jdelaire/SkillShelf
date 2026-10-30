@@ -140,6 +140,55 @@ import Testing
         #expect(agent?.source == .file(path: f.layout.opencodeConfig, key: "agent.x.prompt"))
     }
 
+    @Test func opencodeEnvDependentFileReferencesStayUnresolved() throws {
+        let f = try Fixture(); defer { f.remove() }
+        try f.write(".config/opencode/opencode.jsonc", #"{"instructions":["{file:./{env:RULES_FILE}}"],"agent":{"review":{"prompt":"prefix {file:./{env:PROMPT_FILE}} suffix"}},"default_agent":"review"}"#)
+        let files = InstructionFiles()
+        let parts = InstructionReader.parts(layout: f.layout, harness: .opencode, files: files)
+        let runtime = parts.filter { $0.notes.contains("Set from the environment at runtime") }
+        #expect(runtime.map(\.source) == [
+            .file(path: f.layout.opencodeConfig, key: "instructions.0"),
+            .file(path: f.layout.opencodeConfig, key: "agent.review.prompt"),
+        ])
+        #expect(runtime.allSatisfy { $0.status == .present })
+        #expect(runtime.last?.notes.contains("Active agent") == true)
+        #expect(!parts.contains { $0.filePath?.contains("{env:") == true })
+        #expect(files.reads == 1)
+    }
+
+    @Test(arguments: ["config.json", "opencode.json", "opencode.jsonc"])
+    func opencodeUnquotedEnvPreservesIndependentInstructionsAndAgents(configName: String) throws {
+        let f = try Fixture(); defer { f.remove() }
+        try f.write("rules.md", "rules")
+        try f.write(".config/opencode/review.txt", "review prompt")
+        try f.write(".config/opencode/\(configName)", #"{"username":"say \"hi\" \\ 🦉","autoupdate":{env:AUTOUPDATE},"instructions":["~/rules.md","{env:RUNTIME_RULES}"],"agent":{"quoted":{"prompt":"say \"hi\" \\ {env:QUOTED_PROMPT}"},"review":{"prompt":"{file:./review.txt}"},"runtime":{"prompt":{env:RUNTIME_PROMPT}}},"default_agent":"review"}"#)
+        let parts = InstructionReader.parts(layout: f.layout, harness: .opencode)
+        #expect(parts.contains { $0.filePath == f.layout.path("rules.md") && $0.status == .present })
+        let review = try #require(parts.first { $0.filePath == f.layout.path(".config/opencode/review.txt") })
+        #expect(review.status == .present)
+        #expect(review.notes.contains("Active agent"))
+        let runtime = parts.filter { $0.notes.contains("Set from the environment at runtime") }
+        #expect(runtime.map(\.source) == [
+            .file(path: f.layout.path(".config/opencode/\(configName)"), key: "instructions.1"),
+            .file(path: f.layout.path(".config/opencode/\(configName)"), key: "agent.quoted.prompt"),
+            .file(path: f.layout.path(".config/opencode/\(configName)"), key: "agent.runtime.prompt"),
+        ])
+    }
+
+    @Test func opencodeAgentsSharingPromptFileHaveDistinctStableIDs() throws {
+        let f = try Fixture(); defer { f.remove() }
+        try f.write(".config/opencode/shared.txt", "shared prompt")
+        try f.write(".config/opencode/opencode.jsonc", #"{"agent":{"first":{"prompt":"{file:./shared.txt}"},"second":{"prompt":"{file:./shared.txt}"}},"default_agent":"second"}"#)
+        let agents = InstructionReader.parts(layout: f.layout, harness: .opencode).filter { $0.layer == .agentDefinitions }
+        #expect(agents.count == 2)
+        #expect(agents.map(\.source) == Array(repeating: .file(path: f.layout.path(".config/opencode/shared.txt"), key: nil), count: 2))
+        #expect(Set(agents.map(\.id)).count == 2)
+        #expect(agents.allSatisfy { $0.notes.contains { $0.hasSuffix("loaded twice") } })
+        #expect(agents.filter { $0.notes.contains("Active agent") }.count == 1)
+        let rescanned = InstructionReader.parts(layout: f.layout, harness: .opencode).filter { $0.layer == .agentDefinitions }
+        #expect(rescanned.map(\.id) == agents.map(\.id))
+    }
+
     @Test func opencodeConfigPrecedenceKeepsWinningKeyProvenance() throws {
         let f = try Fixture(); defer { f.remove() }
         try f.write(".config/opencode/config.json", #"{"instructions":["~/old.md"],"agent":{"old":{"prompt":"{file:old.txt}"}},"default_agent":"fresh"}"#)

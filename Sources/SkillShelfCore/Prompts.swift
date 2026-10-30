@@ -26,6 +26,7 @@ public struct PromptPart: Sendable, Identifiable, Hashable {
     public let status: PromptStatus
     public let version: String?
     public let notes: [String]
+    private let idSuffix: String?
 
     public init(
         harness: HarnessID,
@@ -34,7 +35,8 @@ public struct PromptPart: Sendable, Identifiable, Hashable {
         source: PromptSource,
         status: PromptStatus,
         version: String? = nil,
-        notes: [String] = []
+        notes: [String] = [],
+        idSuffix: String? = nil
     ) {
         let identity: String
         switch source {
@@ -43,7 +45,7 @@ public struct PromptPart: Sendable, Identifiable, Hashable {
         case .capture(let path): identity = path
         case .none: identity = title
         }
-        id = "\(harness.rawValue)/\(layer)/\(identity)"
+        id = "\(harness.rawValue)/\(layer)/\(identity)" + (idSuffix.map { "#" + $0 } ?? "")
         self.harness = harness
         self.layer = layer
         self.title = title
@@ -51,6 +53,7 @@ public struct PromptPart: Sendable, Identifiable, Hashable {
         self.status = status
         self.version = version
         self.notes = notes
+        self.idSuffix = idSuffix
     }
 
     public var filePath: String? {
@@ -61,7 +64,7 @@ public struct PromptPart: Sendable, Identifiable, Hashable {
     func addingNotes(_ extra: [String]) -> PromptPart {
         PromptPart(
             harness: harness, layer: layer, title: title, source: source,
-            status: status, version: version, notes: notes + extra.filter { !notes.contains($0) }
+            status: status, version: version, notes: notes + extra.filter { !notes.contains($0) }, idSuffix: idSuffix
         )
     }
 }

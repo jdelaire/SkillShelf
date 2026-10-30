@@ -43,8 +43,8 @@ extension InstructionReader {
                 guard let agent = agents[name] as? [String: Any], agent["prompt"] is String else { continue }
                 let keyPath = ["agent", name, "prompt"]
                 let notes = [replacement] + (name == defaultAgent ? ["Active agent"] : [])
-                parts += config.parts(at: keyPath, layer: .agentDefinitions, layout: layout, notes: notes)
-                    ?? [config.part(at: keyPath, layer: .agentDefinitions, notes: notes)]
+                parts += config.parts(at: keyPath, layer: .agentDefinitions, layout: layout, notes: notes, idSuffix: name)
+                    ?? [config.part(at: keyPath, layer: .agentDefinitions, notes: notes, idSuffix: name)]
             }
         }
         if defaultAgent == nil {
@@ -90,10 +90,11 @@ extension InstructionReader {
                         ?? (relative as NSString).deletingPathExtension
                     let notes = [replacement] + (agentName == defaultAgent ? ["Active agent"] : [])
                     let part = file(child, harness: .opencode, layer: .agentDefinitions, layout: layout, notes: notes)
-                    parts.append(head == nil ? PromptPart(
+                    parts.append(PromptPart(
                         harness: .opencode, layer: .agentDefinitions, title: part.title, source: part.source,
-                        status: .missing, notes: notes + ["Unable to read agent frontmatter"]
-                    ) : part)
+                        status: head == nil ? .missing : part.status,
+                        notes: notes + (head == nil ? ["Unable to read agent frontmatter"] : []), idSuffix: agentName
+                    ))
                 }
             }
         }
@@ -109,22 +110,45 @@ private struct OpenCodeConfig {
     let references: [[String]: [OpenCodeReference]]
 
     init?(text: String, path: String, layout: Layout, files: InstructionFiles) {
-        guard let regex = try? NSRegularExpression(pattern: #"\{(file|env):([^}]+)\}"#) else { return nil }
-        let matches = regex.matches(in: text, range: NSRange(text.startIndex..., in: text))
-        if matches.isEmpty {
-            guard let object = JSONC.object(text) else { return nil }
+        guard let environment = try? NSRegularExpression(pattern: #"\{env:([^}]+)\}"#),
+              let file = try? NSRegularExpression(pattern: #"\{file:([^}]+)\}"#) else { return nil }
+        let prefix = "SKILLSHELF_" + UUID().uuidString + "_"
+        guard let marker = try? NSRegularExpression(pattern: NSRegularExpression.escapedPattern(for: prefix) + #"(\d+)_END"#) else { return nil }
+        var targets: [String?] = []
+        func mark(_ text: String, using regex: NSRegularExpression, isFile: Bool) -> String {
+            let source = text as NSString
+            var output = ""
+            var cursor = 0
+            var inString = false
+            var escaped = false
+            for match in regex.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
+                let preceding = source.substring(with: NSRange(location: cursor, length: match.range.location - cursor))
+                for scalar in preceding.unicodeScalars {
+                    if escaped {
+                        escaped = false
+                    } else if inString && scalar == "\\" {
+                        escaped = true
+                    } else if scalar == "\"" {
+                        inString.toggle()
+                    }
+                }
+                let token = prefix + String(targets.count) + "_END"
+                let target = source.substring(with: match.range(at: 1))
+                targets.append(isFile && !target.contains(prefix) ? target : nil)
+                output += preceding + (inString ? token : "\"" + token + "\"")
+                cursor = NSMaxRange(match.range)
+            }
+            return output + source.substring(from: cursor)
+        }
+        let environmentMarked = mark(JSONC.strip(text), using: environment, isFile: false)
+        let marked = mark(environmentMarked, using: file, isFile: true)
+        guard let markedObject = JSONC.object(marked) else { return nil }
+        if targets.isEmpty {
             self.path = path
-            self.object = object
+            self.object = markedObject
             references = [:]
             return
         }
-        let prefix = "SKILLSHELF_" + UUID().uuidString + "_"
-        guard let marker = try? NSRegularExpression(pattern: NSRegularExpression.escapedPattern(for: prefix) + #"(\d+)_END"#) else { return nil }
-        let marked = NSMutableString(string: text)
-        for (index, match) in matches.enumerated().reversed() {
-            marked.replaceCharacters(in: match.range, with: prefix + String(index) + "_END")
-        }
-        guard let markedObject = JSONC.object(marked as String) else { return nil }
         var keyPaths: [Int: [String]] = [:]
         func visit(_ value: Any, at keyPath: [String]) {
             if let dictionary = value as? [String: Any] {
@@ -138,23 +162,22 @@ private struct OpenCodeConfig {
             }
         }
         visit(markedObject, at: [])
-        let expanded = NSMutableString(string: text)
-        let source = text as NSString
+        let expanded = NSMutableString(string: marked)
+        let source = marked as NSString
         var references: [OpenCodeReference] = []
-        for (index, match) in matches.enumerated().reversed() {
-            guard let keyPath = keyPaths[index] else { continue }
-            let kind = source.substring(with: match.range(at: 1))
-            if kind == "env" {
-                references.append(OpenCodeReference(keyPath: keyPath, file: nil, status: .present))
-            } else {
+        for match in marker.matches(in: marked, range: NSRange(marked.startIndex..., in: marked)).reversed() {
+            guard let index = Int(source.substring(with: match.range(at: 1))), let keyPath = keyPaths[index] else { continue }
+            if let reference = targets[index] {
                 let directory = (path as NSString).deletingLastPathComponent
-                let target = InstructionReader.resolve(source.substring(with: match.range(at: 2)), relativeTo: directory, layout: layout)
+                let target = InstructionReader.resolve(reference, relativeTo: directory, layout: layout)
                 let content = files.text(target)
                 let trimmed = (content ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
                 guard let data = try? JSONSerialization.data(withJSONObject: trimmed, options: .fragmentsAllowed),
                       let quoted = String(data: data, encoding: .utf8) else { return nil }
                 expanded.replaceCharacters(in: match.range, with: String(quoted.dropFirst().dropLast()))
                 references.append(OpenCodeReference(keyPath: keyPath, file: target, status: content == nil ? .missing : .present))
+            } else {
+                references.append(OpenCodeReference(keyPath: keyPath, file: nil, status: .present))
             }
         }
         guard let object = JSONC.object(expanded as String) else { return nil }
@@ -163,15 +186,15 @@ private struct OpenCodeConfig {
         self.references = Dictionary(grouping: references.reversed(), by: \.keyPath)
     }
 
-    func part(at keyPath: [String], layer: PromptLayer, notes: [String]) -> PromptPart {
+    func part(at keyPath: [String], layer: PromptLayer, notes: [String], idSuffix: String? = nil) -> PromptPart {
         let key = keyPath.joined(separator: ".")
         return PromptPart(
             harness: .opencode, layer: layer, title: "\((path as NSString).lastPathComponent) › \(key)",
-            source: .file(path: path, key: key), status: .present, notes: notes
+            source: .file(path: path, key: key), status: .present, notes: notes, idSuffix: idSuffix
         )
     }
 
-    func parts(at keyPath: [String], layer: PromptLayer, layout: Layout, notes: [String]) -> [PromptPart]? {
+    func parts(at keyPath: [String], layer: PromptLayer, layout: Layout, notes: [String], idSuffix: String? = nil) -> [PromptPart]? {
         let matches = references[keyPath] ?? []
         guard !matches.isEmpty else { return nil }
         let notes = notes + (matches.contains { $0.file == nil } ? ["Set from the environment at runtime"] : [])
@@ -180,10 +203,10 @@ private struct OpenCodeConfig {
             guard let file = reference.file, seen.insert(file).inserted else { return nil }
             return PromptPart(
                 harness: .opencode, layer: layer, title: layout.display(file), source: .file(path: file, key: nil),
-                status: reference.status, notes: notes + ["via {file:} in \((path as NSString).lastPathComponent)"]
+                status: reference.status, notes: notes + ["via {file:} in \((path as NSString).lastPathComponent)"], idSuffix: idSuffix
             )
         }
-        return parts.isEmpty ? [part(at: keyPath, layer: layer, notes: notes)] : parts
+        return parts.isEmpty ? [part(at: keyPath, layer: layer, notes: notes, idSuffix: idSuffix)] : parts
     }
 }
 
