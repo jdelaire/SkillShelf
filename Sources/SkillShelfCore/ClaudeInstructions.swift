@@ -3,15 +3,17 @@ import Foundation
 extension InstructionReader {
     static func claude(layout: Layout, files: InstructionFiles) -> [PromptPart] {
         var parts: [PromptPart] = []
-        var visited = Set<String>()
+        var minimumDepth: [String: Int] = [:]
         func visit(_ path: String, depth: Int, parent: String?) {
             let canonical = Paths.canonical(path) ?? URL(fileURLWithPath: path).standardized.path
-            guard visited.insert(canonical).inserted else { return }
+            let previousDepth = minimumDepth[canonical]
+            if let previousDepth, previousDepth <= depth { return }
+            minimumDepth[canonical] = depth
             let part = file(
                 path, harness: .claude, layer: .instructions, layout: layout,
                 notes: parent.map { ["Imported by \($0)"] } ?? []
             )
-            parts.append(part)
+            if previousDepth == nil { parts.append(part) }
             guard depth < 4, part.status == .present,
                   let attributes = try? FileManager.default.attributesOfItem(atPath: canonical),
                   let size = attributes[.size] as? NSNumber, size.intValue <= 1_048_576,

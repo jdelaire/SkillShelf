@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import Testing
 @testable import SkillShelfCore
@@ -21,6 +22,27 @@ import Testing
         let gone = InstructionReader.parts(layout: f.layout, harness: .claude).first { $0.filePath == f.layout.path(".claude/gone.md") }
         #expect(gone?.status == .missing)
         #expect(gone?.notes == ["Imported by ~/.claude/CLAUDE.md"])
+    }
+
+    @Test func claudeRevisitsImportsReachedThroughFewerHops() throws {
+        let f = try Fixture(); defer { f.remove() }
+        try f.write(".claude/CLAUDE.md", "@a.md @d.md")
+        try f.write(".claude/a.md", "@b.md")
+        try f.write(".claude/b.md", "@c.md")
+        try f.write(".claude/c.md", "@d.md")
+        try f.write(".claude/d.md", "@e.md @CLAUDE.md")
+        try f.write(".claude/e.md", "@f.md")
+        try f.write(".claude/f.md", "@g.md")
+        try f.write(".claude/g.md", "@too-deep.md")
+        try f.write(".claude/too-deep.md", "x")
+        let files = InstructionFiles()
+        let parts = InstructionReader.parts(layout: f.layout, harness: .claude, files: files)
+        #expect(parts.compactMap(\.filePath) == [
+            "CLAUDE.md", "a.md", "b.md", "c.md", "d.md", "e.md", "f.md", "g.md",
+        ].map { f.layout.path(".claude/" + $0) })
+        #expect(parts.first { $0.filePath == f.layout.path(".claude/d.md") }?.notes == ["Imported by ~/.claude/c.md"])
+        #expect(parts.first { $0.filePath == f.layout.path(".claude/e.md") }?.notes == ["Imported by ~/.claude/d.md"])
+        #expect(files.reads == 7)
     }
 
     @Test func claudeImportsResolveRelativeAndHomePathsOutsideFences() throws {
@@ -174,6 +196,51 @@ import Testing
         let parts = InstructionReader.parts(layout: f.layout, harness: .claude, files: files)
         #expect(parts.last?.notes.isEmpty == true)
         #expect(files.reads == 1)
+    }
+
+    @Test func ruleFrontmatterSurvivesDescriptorLimit() async {
+        await #expect(processExitsWith: .success) {
+            let f = try Fixture(); defer { f.remove() }
+            let claude = "---\npaths: **/*.swift\n---\n" + String(repeating: "x", count: 8_192)
+            let antigravity = "---\ntrigger: model_decision\n---\n" + String(repeating: "x", count: 8_192)
+            for i in 0..<500 {
+                try f.write(".claude/rules/r\(i).md", claude)
+                try f.write(".gemini/config/rules/r\(i).md", antigravity)
+            }
+            var limit = rlimit()
+            try #require(getrlimit(RLIMIT_NOFILE, &limit) == 0)
+            limit.rlim_max = min(limit.rlim_max, 256)
+            limit.rlim_cur = min(limit.rlim_cur, limit.rlim_max)
+            try #require(setrlimit(RLIMIT_NOFILE, &limit) == 0)
+            let files = InstructionFiles()
+            for harness in [HarnessID.claude, .antigravity] {
+                let rules = InstructionReader.parts(layout: f.layout, harness: harness, files: files).filter {
+                    $0.filePath?.contains("/rules/") == true
+                }
+                try #require(rules.count == 500)
+                try #require(rules.allSatisfy { $0.status == .present })
+                let note = harness == .claude ? "Loads when a matching file is read" : "Conditional: trigger model_decision"
+                try #require(rules.allSatisfy { $0.notes.contains(note) })
+            }
+            #expect(files.reads == 1_000)
+        }
+    }
+
+    @Test func failedRuleHeadReadIsExplicitAndMemoized() throws {
+        let f = try Fixture(); defer { f.remove() }
+        for (harness, directory) in [
+            (HarnessID.claude, ".claude/rules"), (.antigravity, ".gemini/config/rules"),
+        ] {
+            let files = InstructionFiles()
+            let path = f.layout.path(directory + "/unreadable.md")
+            #expect(files.head(path) == nil)
+            try f.write(directory + "/unreadable.md", "---\npaths: **/*.swift\ntrigger: model_decision\n---\nx")
+            let rule = try #require(InstructionReader.parts(layout: f.layout, harness: harness, files: files).first { $0.filePath == path })
+            #expect(rule.status == .missing)
+            #expect(rule.notes.contains("Unable to read rule frontmatter"))
+            #expect(files.head(path) == nil)
+            #expect(files.reads == 0)
+        }
     }
 
     @Test func largeRuleTreeStopsAt500() throws {

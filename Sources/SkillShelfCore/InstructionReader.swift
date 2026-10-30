@@ -7,64 +7,64 @@ public final class InstructionFiles {
     public init() {}
 
     public func text(_ path: String) -> String? {
-        entry(path).load(upTo: nil).flatMap { String(data: $0, encoding: .utf8) }
+        load(path, upTo: nil).flatMap { String(data: $0, encoding: .utf8) }
     }
 
     public func head(_ path: String, bytes: Int = 4096) -> String? {
-        entry(path).load(upTo: max(0, bytes)).map { String(decoding: $0, as: UTF8.self) }
+        load(path, upTo: max(0, bytes)).map { String(decoding: $0, as: UTF8.self) }
     }
 
-    private func entry(_ path: String) -> CachedFile {
+    private func load(_ path: String, upTo limit: Int?) -> Data? {
         let key = Paths.canonical(path) ?? URL(fileURLWithPath: path).standardized.path
-        if let entry = cache[key] { return entry }
-        let entry = CachedFile(key)
-        cache[key] = entry
-        if entry.handle != nil { reads += 1 }
-        return entry
+        let entry: CachedFile
+        if let cached = cache[key] {
+            entry = cached
+        } else {
+            entry = CachedFile(key)
+            cache[key] = entry
+        }
+        let hadRead = entry.hasRead
+        let data = entry.load(upTo: limit)
+        if !hadRead, entry.hasRead { reads += 1 }
+        return data
     }
 
     private final class CachedFile {
-        var handle: FileHandle?
+        let path: String
         var data: Data?
+        var hasRead = false
+        var complete = false
 
         init(_ path: String) {
+            self.path = path
             guard let attributes = try? FileManager.default.attributesOfItem(atPath: path),
-                  attributes[.type] as? FileAttributeType == .typeRegular,
-                  let handle = try? FileHandle(forReadingFrom: URL(fileURLWithPath: path))
+                  attributes[.type] as? FileAttributeType == .typeRegular
             else { return }
-            self.handle = handle
             data = Data()
         }
 
-        deinit { try? handle?.close() }
-
         func load(upTo limit: Int?) -> Data? {
             guard var buffer = data else { return nil }
-            if let handle {
+            if !complete, limit.map({ buffer.count < $0 }) ?? true {
                 do {
+                    let handle = try FileHandle(forReadingFrom: URL(fileURLWithPath: path))
+                    defer { try? handle.close() }
+                    hasRead = true
+                    try handle.seek(toOffset: UInt64(buffer.count))
                     if let limit {
-                        if buffer.count < limit {
-                            let chunk = try handle.read(upToCount: limit - buffer.count) ?? Data()
-                            buffer.append(chunk)
-                            if buffer.count < limit { close() }
-                        }
+                        buffer.append(try handle.read(upToCount: limit - buffer.count) ?? Data())
+                        complete = buffer.count < limit
                     } else {
                         buffer.append(try handle.readToEnd() ?? Data())
-                        close()
+                        complete = true
                     }
                     data = buffer
                 } catch {
-                    close()
                     data = nil
                     return nil
                 }
             }
             return limit.map { Data(buffer.prefix($0)) } ?? buffer
-        }
-
-        private func close() {
-            try? handle?.close()
-            handle = nil
         }
     }
 }
@@ -175,8 +175,14 @@ public enum InstructionReader {
                 if isDirectory.boolValue {
                     if recursive { visit(path) }
                 } else if (name as NSString).pathExtension.lowercased() == "md" {
-                    let fields = files.head(path).map(Frontmatter.parse) ?? [:]
-                    parts.append(file(path, harness: harness, layer: .instructions, layout: layout, notes: notes(fields)))
+                    if let head = files.head(path) {
+                        parts.append(file(path, harness: harness, layer: .instructions, layout: layout, notes: notes(Frontmatter.parse(head))))
+                    } else {
+                        parts.append(PromptPart(
+                            harness: harness, layer: .instructions, title: layout.display(path), source: .file(path: path, key: nil),
+                            status: .missing, notes: ["Unable to read rule frontmatter"]
+                        ))
+                    }
                 }
             }
         }
