@@ -23,8 +23,8 @@ Layer 1 lists the sources a harness reads, in its documented order. It does not 
 | Claude Code | `~/.claude/CLAUDE.md` and its `@path` imports, recursively up to 4 hops with a cycle guard; `~/.claude/rules/**/*.md` without `paths` frontmatter | Rules with `paths` frontmatter ("loads when a matching file is read"); the output style named by `outputStyle` in `~/.claude/settings.json`: a user file in `~/.claude/output-styles/` is shown, a built-in style is `unavailable("Built-in style")`. Plugin-forced styles are not detected. |
 | Codex | `~/.codex/AGENTS.override.md` if non-empty, else `~/.codex/AGENTS.md` (`$CODEX_HOME` overrides `~/.codex`); `config.toml` keys `instructions`, `developer_instructions` | `model_instructions_file` ("replaces the base prompt") |
 | Cursor | Unavailable: user rules come from Cursor's server-side knowledge base. | |
-| OpenCode | Global config merged in order `config.json`, `opencode.json`, `opencode.jsonc` under `~/.config/opencode`. `~/.config/opencode/AGENTS.md`, else `~/.claude/CLAUDE.md`; every `instructions` entry (files, globs, URLs) | Agent definitions in `~/.config/opencode/agents/*.md`, legacy `agent/`, and `agent.<name>.prompt`: shown in their own group, each noted "replaces the base prompt when this agent is selected"; the agent named by `default_agent`, else `build`, is marked active |
-| Grok | Every matching named file under `$GROK_HOME` (default `~/.grok`): `Agents.md`, `Claude.md`, `CLAUDE.md`, `CLAUDE.local.md`, `AGENT.md`, `AGENTS.md`, deduplicated by file identity (case-insensitive filesystem); the same named files in `~/.claude` and `~/.cursor`; rule dirs `~/.grok/rules`, `~/.claude/rules`, `~/.cursor/rules`, then `[paths].extra_rule_dirs`, each sorted by name. Each compat source honors its own `[compat.claude]` and `[compat.cursor]` switches as documented in `~/.grok/docs/user-guide/12-project-rules.md`. | |
+| OpenCode | Global config merged in order `config.json`, `opencode.json`, `opencode.jsonc` under `~/.config/opencode`. `~/.config/opencode/AGENTS.md`, else `~/.claude/CLAUDE.md`; every `instructions` entry (files, globs, URLs) | Agent definitions found recursively in `~/.config/opencode/agents/**/*.md` and legacy `agent/**/*.md`, plus `agent.<name>.prompt`: shown in their own group, each noted "replaces the base prompt when this agent is selected". The agent named by `default_agent` is marked active. Without `default_agent`, none is marked and the group notes "OpenCode uses the first enabled primary agent. Capture shows which." |
+| Grok | Every matching named file under `$GROK_HOME` (default `~/.grok`): `Agents.md`, `Claude.md`, `CLAUDE.md`, `CLAUDE.local.md`, `AGENT.md`, `AGENTS.md`, deduplicated by file identity (case-insensitive filesystem); the same named files in `~/.claude` and `~/.cursor`; rule dirs `$GROK_HOME/rules`, `~/.claude/rules`, `~/.cursor/rules`, then `[paths].extra_rule_dirs`, each sorted by name. Each compat source honors its own `[compat.claude]` and `[compat.cursor]` switches as documented in `~/.grok/docs/user-guide/12-project-rules.md`. | |
 | Antigravity | `~/.gemini/AGENTS.md`, `~/.gemini/GEMINI.md`, `~/.gemini/config/AGENTS.md`, `~/.gemini/config/GEMINI.md`; rules in `~/.gemini/config/rules/*.md` and `~/.gemini/antigravity-cli/rules/*.md` with `trigger: always_on` | Rules with any other `trigger` |
 | Muse Code | `run.system_prompt` and `run.developer_prompt` in `~/.config/muse/settings.json`; foreign personal rules `~/.claude/CLAUDE.md` and `$CODEX_HOME/AGENTS.md` unless `context.foreign_personal_rules` disables them | |
 
@@ -99,6 +99,7 @@ Text is loaded separately: `PromptContent.load(_ part: PromptPart, fetcher: Prom
 Config parsing, scoped lexical readers with no new dependency:
 - `TOMLKeys`: reads `section.key` values of type basic and literal string, multi-line string with escapes, bool, and array of strings. `PluginReaders.grokCompat` moves onto it.
 - `JSONC`: removes `//` and `/* */` comments and trailing commas while respecting string literals and escapes, then uses `JSONSerialization`.
+- OpenCode substitutions, applied to the raw text before JSONC parsing as OpenCode does: `{file:<path>}` is replaced by that file's contents, with the path resolved relative to the config file's directory and `~` expanded; the resulting part's source is the referenced file, noted "via {file:} in <config file>". `{env:<VAR>}` is left unresolved and noted "set from the environment at runtime".
 
 ### BasePromptReader
 
@@ -120,8 +121,17 @@ Run:
 
 1. Busy check: a `isRunning` flag is set before the first `await`; a second request while running returns `.busy`.
 2. Sentinel: a user message `SKILLSHELF_CAPTURE_<UUID>`.
-3. Sandbox: the harness runs as `/usr/bin/sandbox-exec -p <profile> <harness> ...`. The profile allows everything except network, and allows network only to and from `localhost`. Child processes (hooks, MCP servers, plugins) inherit it. If `sandbox-exec` is missing or the profile fails to apply, the capture fails with "Network sandbox unavailable" and nothing runs.
-4. Environment: the login PATH and home from the existing runner, minus every credential and proxy variable (`ANTHROPIC_*`, `OPENAI_*`, `CLAUDE_CODE_OAUTH_TOKEN`, `GEMINI_API_KEY`, `GOOGLE_*`, `XAI_*`, `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY` and their lowercase forms), plus the adapter's redirect and placeholder variables. The user's own config files are used as they are, so hooks, local MCP servers, skills and plugins contribute what they normally would. Remote MCP servers and any other outbound connection fail inside the sandbox.
+3. Sandbox: the harness runs as `/usr/bin/sandbox-exec -p <profile> <harness> ...` with this profile:
+
+   ```scheme
+   (version 1)
+   (allow default)
+   (deny network*)
+   (allow network-outbound (remote ip "localhost:<port>"))
+   ```
+
+   The only allowed connection is outbound to the capture port. That also blocks other localhost services, such as local proxies, HTTP MCP servers and bridges, which could relay traffic off the Mac, and every Unix domain socket. The base URL uses the literal `http://127.0.0.1:<port>`, so no name resolution happens. Child processes (hooks, MCP servers, plugins) inherit the profile. If an adapter cannot reach the listener without a specific Unix socket, that socket's exact path is allowed with `(remote unix-socket (path-literal "<path>"))` for that adapter only, and the spec's adapter table records it. If `sandbox-exec` is missing or the profile fails to apply, the capture fails with "Network sandbox unavailable" and nothing runs.
+4. Environment: the login PATH and home from the existing runner, minus every credential and proxy variable (`ANTHROPIC_*`, `OPENAI_*`, `CLAUDE_CODE_OAUTH_TOKEN`, `GEMINI_API_KEY`, `GOOGLE_*`, `XAI_*`, `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY` and their lowercase forms), plus the adapter's redirect and placeholder variables. The user's own config files are used as they are, so hooks, local MCP servers, skills and plugins contribute what they normally would. Remote MCP servers, HTTP MCP servers on other localhost ports and any other connection fail inside the sandbox, and the capture notes which MCP servers failed when the harness reports it.
 5. cwd: a new empty temp directory.
 6. Listener behavior per request:
    - Limits: 64 KB of headers, 32 MB of body, 8 concurrent connections, 30 requests. Over a limit, the connection is closed and the capture notes it.
@@ -176,12 +186,12 @@ Shown in the part row and the detail pane, not as alerts.
 
 Swift Testing with temp-home fixtures.
 
-- `InstructionReader`: per-harness order; missing parts; Claude imports with depth limit and a cycle; Claude conditional rules; Grok multiple named files with a case-insensitive duplicate and compat switches; OpenCode config merge order, agent group and active agent; Muse settings keys; the duplicate note for the OpenCode symlink case.
+- `InstructionReader`: per-harness order; missing parts; Claude imports with depth limit and a cycle; Claude conditional rules; Grok multiple named files with a case-insensitive duplicate, compat switches and a custom `$GROK_HOME`; OpenCode config merge order, recursive agent discovery, active agent with and without `default_agent`, `{file:}` and `{env:}` substitutions; Muse settings keys; the duplicate note for the OpenCode symlink case.
 - `TOMLKeys` and `JSONC`: multi-line strings, escapes, string arrays, comment markers and URLs inside strings, trailing commas.
 - `BasePromptReader`: `models_cache.json` parsing and configured-model ordering; GitHub URLs from a version; a cache hit makes no fetch call.
 - `CaptureParser`: both formats and the fallback; main request selection with and without tools and sentinel.
 - `PromptCapture` lifecycle with a real listener and a fake client script (`/bin/sh` running `curl` against the listener, then sleeping): request recorded; process group terminated once the sentinel request arrives; temp directory removed; saved file has no header data and `0600` permissions; cancellation cleans up; a second capture while busy returns `.busy`; limits close oversized requests.
-- Sandbox: inside the profile, a connection to the listener succeeds and a connection to a non-loopback address fails with a permission error.
+- Sandbox: inside the profile, a connection to the listener succeeds; a connection to a second local listener on another port, a non-loopback address and a Unix socket each fail with `EPERM`. Covered for `curl`, a child of a child process, and a URLSession client.
 
 No real harness is started in tests.
 
@@ -195,5 +205,6 @@ Add a "System prompts" section to `docs/plan.md` summarizing the tables above, a
 - `sandbox-exec` is deprecated by Apple but still ships. If it disappears, Capture fails closed.
 - Codex `models_cache.json` reflects server-delivered templates and can differ from the release's bundled prompt.
 - Captures miss provider-side additions and anything from remote MCP servers.
-- Hooks and local MCP servers run during a capture with the user's config. Their local side effects happen as in a normal session.
+- Hooks and stdio MCP servers run during a capture with the user's config. Their local side effects happen as in a normal session.
+- Blocking Unix sockets can break a hook or MCP server that needs one; the capture then lacks its text.
 - Placeholder auth can differ from subscription auth in small ways.
