@@ -33,15 +33,23 @@ public actor LoginShellRunner: CommandRunning {
     }
 
     public func run(_ tool: String, _ arguments: [String]) async throws -> CommandResult {
-        let path = try await resolvedPath()
-        guard let executable = path.split(separator: ":").map({ "\($0)/\(tool)" })
-            .first(where: { FileManager.default.isExecutableFile(atPath: $0) })
-        else { throw CommandError.toolNotFound(tool) }
-        var environment = ProcessInfo.processInfo.environment
-        environment["PATH"] = path
+        guard let executable = await resolve(tool) else { throw CommandError.toolNotFound(tool) }
+        let environment = await loginEnvironment()
         let result = try await Self.launch(executable, arguments, environment, home, timeout)
         if result.timedOut { throw CommandError.timedOut(tool) }
         return CommandResult(status: result.status, output: result.output, error: result.error)
+    }
+
+    public func resolve(_ tool: String) async -> String? {
+        guard let path = try? await resolvedPath() else { return nil }
+        return path.split(separator: ":").map { "\($0)/\(tool)" }
+            .first { FileManager.default.isExecutableFile(atPath: $0) }
+    }
+
+    public func loginEnvironment() async -> [String: String] {
+        var environment = ProcessInfo.processInfo.environment
+        if let path = try? await resolvedPath() { environment["PATH"] = path }
+        return environment
     }
 
     private func resolvedPath() async throws -> String {
