@@ -17,13 +17,14 @@ struct BasePromptReaderTests {
         #expect(BasePromptReader.cachePath(cacheRoot: "/tmp/prompts", harness: .opencode, version: "1.19.5", file: "codex.txt") == "/tmp/prompts/opencode/1.19.5/codex.txt")
     }
 
-    @Test func codexModelsComeFromCacheWithConfiguredFirst() async throws {
+    @Test(arguments: [[:], ["CODEX_HOME": ""]])
+    func codexModelsComeFromCacheWithConfiguredFirst(_ environment: [String: String]) async throws {
         let f = try Fixture(); defer { f.remove() }
         let cache = #"{"fetched_at":"2026-10-30T00:00:00Z","etag":"test","client_version":"0.164.0","identity":"fixture","models":[{"slug":"a","model_messages":{"persistent_instructions":"p"}},{"slug":"b","model_messages":{"instructions_template":"t","approvals":{"on_request":"confirm"}}}]}"#
         try f.write(".codex/models_cache.json", cache)
         try f.write(".codex/config.toml", "model = \"b\"")
         let fetcher = CountingFetcher()
-        let result = await BasePromptReader.read(harness: .codex, layout: f.layout, runner: StubRunner(output: "codex-cli 0.164.0"), fetcher: fetcher, cacheRoot: f.layout.path("cache"))
+        let result = await BasePromptReader.read(harness: .codex, layout: f.layout, runner: StubRunner(output: "codex-cli 0.164.0"), fetcher: fetcher, cacheRoot: f.layout.path("cache"), environment: environment)
         #expect(result.version == "0.164.0")
         #expect(result.parts.map(\.title) == ["b", "a"])
         #expect(result.parts[0].notes == ["Configured model"])
@@ -38,12 +39,35 @@ struct BasePromptReaderTests {
         #expect(try String(contentsOfFile: f.layout.path(".codex/config.toml"), encoding: .utf8) == "model = \"b\"")
     }
 
+    @Test func codexModelsHonorCustomHomeAndConfiguredModel() async throws {
+        let f = try Fixture(); defer { f.remove() }
+        let cache = #"{"models":[{"slug":"a"},{"slug":"b"}]}"#
+        try f.write(".codex/models_cache.json", #"{"models":[{"slug":"default"}]}"#)
+        try f.write(".codex/config.toml", "model = \"a\"")
+        try f.write("custom/models_cache.json", cache)
+        try f.write("custom/config.toml", "model = \"b\"")
+        let fetcher = CountingFetcher()
+        let result = await BasePromptReader.read(harness: .codex, layout: f.layout, runner: StubRunner(output: "0.164.0"), fetcher: fetcher, cacheRoot: f.layout.path("cache"), environment: ["CODEX_HOME": f.layout.path("custom")])
+        #expect(result.version == "0.164.0")
+        #expect(result.parts.map(\.title) == ["b", "a"])
+        #expect(result.parts.first?.notes == ["Configured model"])
+        #expect(result.parts.dropFirst().allSatisfy { $0.notes.isEmpty })
+        #expect(result.parts.map(\.source) == [
+            .file(path: f.layout.path("custom/models_cache.json"), key: "models.b"),
+            .file(path: f.layout.path("custom/models_cache.json"), key: "models.a"),
+        ])
+        #expect(result.parts.allSatisfy { $0.status == .present && $0.version == "0.164.0" })
+        #expect(await fetcher.count == 0)
+        #expect(try String(contentsOfFile: f.layout.path("custom/models_cache.json"), encoding: .utf8) == cache)
+        #expect(try String(contentsOfFile: f.layout.path("custom/config.toml"), encoding: .utf8) == "model = \"b\"")
+    }
+
     @Test(arguments: ["", "{}", "{\"models\":[]}", "{\"models\":{}}", "invalid"])
     func codexMissingOrUnreadableCacheFallsBackLazily(_ contents: String) async throws {
         let f = try Fixture(); defer { f.remove() }
         if !contents.isEmpty { try f.write(".codex/models_cache.json", contents) }
         let fetcher = CountingFetcher()
-        let result = await BasePromptReader.read(harness: .codex, layout: f.layout, runner: StubRunner(output: "codex-cli 0.164.0"), fetcher: fetcher, cacheRoot: f.layout.path("cache"))
+        let result = await BasePromptReader.read(harness: .codex, layout: f.layout, runner: StubRunner(output: "codex-cli 0.164.0"), fetcher: fetcher, cacheRoot: f.layout.path("cache"), environment: [:])
         let part = try #require(result.parts.only)
         #expect(part.title == "prompt.md")
         #expect(part.source == .remote(
@@ -57,7 +81,7 @@ struct BasePromptReaderTests {
 
     @Test func codexDefaultCacheRootUsesSkillShelfCacheDirectory() async throws {
         let f = try Fixture(); defer { f.remove() }
-        let result = await BasePromptReader.read(harness: .codex, layout: f.layout, runner: StubRunner(output: "0.164.0"), fetcher: FailingFetcher())
+        let result = await BasePromptReader.read(harness: .codex, layout: f.layout, runner: StubRunner(output: "0.164.0"), fetcher: FailingFetcher(), environment: [:])
         guard case .remote(_, let cache) = result.parts.first?.source else {
             Issue.record("expected remote fallback"); return
         }
@@ -128,6 +152,33 @@ struct BasePromptReaderTests {
         #expect(!FileManager.default.fileExists(atPath: f.layout.path("cache/opencode/1.19.5/index.json")))
     }
 
+    @Test(arguments: [
+        ("cache/opencode", "cache/opencode"),
+        ("cache/opencode/1.19.5/index.json/blocker", "cache/opencode/1.19.5/index.json"),
+    ])
+    func openCodeListingPersistenceFailureIsRetryableUnavailable(blocker: String, obstruction: String) async throws {
+        let f = try Fixture(); defer { f.remove() }
+        try f.write(blocker, "cache blocker")
+        let fetcher = StubFetcher(#"[{"name":"codex.txt","type":"file"}]"#)
+        let result = await BasePromptReader.read(harness: .opencode, layout: f.layout, runner: StubRunner(output: "1.19.5"), fetcher: fetcher, cacheRoot: f.layout.path("cache"))
+        #expect(result.version == "1.19.5")
+        let part = try #require(result.parts.only)
+        guard case .unavailable(let reason) = part.status else { Issue.record("expected unavailable for cache persistence failure"); return }
+        #expect(reason.hasPrefix("Could not list prompts:"))
+        #expect(part.source == .none)
+        #expect(part.version == "1.19.5")
+        #expect(try String(contentsOfFile: f.layout.path(blocker), encoding: .utf8) == "cache blocker")
+
+        try FileManager.default.removeItem(atPath: f.layout.path(obstruction))
+        let retried = await BasePromptReader.read(harness: .opencode, layout: f.layout, runner: StubRunner(output: "1.19.5"), fetcher: fetcher, cacheRoot: f.layout.path("cache"))
+        #expect(retried.parts.map(\.title) == ["codex.txt"])
+        #expect(retried.parts.first?.status == .present)
+        let index = try Data(contentsOf: URL(fileURLWithPath: f.layout.path("cache/opencode/1.19.5/index.json")))
+        #expect(try JSONDecoder().decode([String].self, from: index) == ["codex.txt"])
+        let cached = await BasePromptReader.read(harness: .opencode, layout: f.layout, runner: StubRunner(output: "1.19.5"), fetcher: FailingFetcher(), cacheRoot: f.layout.path("cache"))
+        #expect(cached.parts == retried.parts)
+    }
+
     @Test func unreadableListingCacheIsRefetched() async throws {
         let f = try Fixture(); defer { f.remove() }
         try f.write("cache/opencode/1.19.5/index.json", "invalid")
@@ -178,7 +229,7 @@ struct BasePromptReaderTests {
     func versionUsesHarnessCommand(_ harness: HarnessID, tool: String) async throws {
         let f = try Fixture(); defer { f.remove() }
         let runner = RecordingRunner()
-        _ = await BasePromptReader.read(harness: harness, layout: f.layout, runner: runner, fetcher: FailingFetcher(), cacheRoot: f.layout.path("cache"))
+        _ = await BasePromptReader.read(harness: harness, layout: f.layout, runner: runner, fetcher: FailingFetcher(), cacheRoot: f.layout.path("cache"), environment: [:])
         let calls = await runner.calls
         #expect(calls.count == 1)
         #expect(calls.first?.0 == tool)

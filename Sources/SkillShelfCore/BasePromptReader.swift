@@ -30,7 +30,8 @@ public enum BasePromptReader {
         layout: Layout,
         runner: any CommandRunning,
         fetcher: any PromptFetching,
-        cacheRoot: String = NSHomeDirectory() + "/Library/Caches/SkillShelf/prompts"
+        cacheRoot: String = NSHomeDirectory() + "/Library/Caches/SkillShelf/prompts",
+        environment: [String: String] = ProcessInfo.processInfo.environment
     ) async -> BasePrompts {
         let installedVersion: String
         do {
@@ -48,7 +49,7 @@ public enum BasePromptReader {
 
         switch harness {
         case .codex:
-            return codex(layout: layout, version: installedVersion, cacheRoot: cacheRoot)
+            return codex(layout: layout, version: installedVersion, cacheRoot: cacheRoot, environment: environment)
         case .opencode:
             return await openCode(version: installedVersion, fetcher: fetcher, cacheRoot: cacheRoot)
         default:
@@ -91,12 +92,13 @@ public enum BasePromptReader {
             .path
     }
 
-    private static func codex(layout: Layout, version: String, cacheRoot: String) -> BasePrompts {
-        let path = layout.path(".codex/models_cache.json")
+    private static func codex(layout: Layout, version: String, cacheRoot: String, environment: [String: String]) -> BasePrompts {
+        let home = InstructionReader.codexHome(layout: layout, environment: environment)
+        let path = home + "/models_cache.json"
         if let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
            let cache = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            let models = cache["models"] as? [[String: Any]] {
-            let config = (try? String(contentsOfFile: layout.path(".codex/config.toml"), encoding: .utf8)) ?? ""
+            let config = (try? String(contentsOfFile: home + "/config.toml", encoding: .utf8)) ?? ""
             let configured = TOMLKeys(config).string("model")
             let parts = models.compactMap { model -> PromptPart? in
                 guard let slug = model["slug"] as? String, !slug.isEmpty else { return nil }
@@ -133,10 +135,9 @@ public enum BasePromptReader {
                 let data = try await fetcher.data(from: openCodeListURL(version: version))
                 let entries = try JSONDecoder().decode([ListingEntry].self, from: data)
                 names = promptNames(entries.filter { $0.type == "file" }.map(\.name))
-                if let encoded = try? JSONEncoder().encode(names) {
-                    try? FileManager.default.createDirectory(at: index.deletingLastPathComponent(), withIntermediateDirectories: true)
-                    try? encoded.write(to: index, options: .atomic)
-                }
+                let encoded = try JSONEncoder().encode(names)
+                try FileManager.default.createDirectory(at: index.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try encoded.write(to: index, options: .atomic)
             } catch {
                 return unavailable(harness: .opencode, version: version, reason: "Could not list prompts: " + error.localizedDescription)
             }
