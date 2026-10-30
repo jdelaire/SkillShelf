@@ -56,12 +56,15 @@ struct PromptCaptureTests {
         let fixture = try Fixture(installed: [])
         defer { fixture.remove() }
         let adapter = try #require(CaptureAdapters.adapter(for: .claude))
+        let id = try #require(UUID(uuidString: "11111111-1111-1111-1111-111111111111"))
         let cwd = "/tmp/skillshelf-capture-11111111-1111-1111-1111-111111111111"
-        #expect(adapter.cleanupPaths(fixture.home, cwd, "SKILLSHELF_CAPTURE_TEST") == [
+        let workingDirectory = try CaptureWorkingDirectory(path: cwd, id: id)
+        #expect(adapter.cleanupPaths(fixture.home, workingDirectory, "SKILLSHELF_CAPTURE_TEST") == [
             fixture.home + "/.claude/projects/-tmp-skillshelf-capture-11111111-1111-1111-1111-111111111111"
         ])
-        for unrelated in ["/Users/person/project", "/tmp/skillshelf-capture-not-a-uuid", "/", "relative"] {
-            #expect(adapter.cleanupPaths(fixture.home, unrelated, "SKILLSHELF_CAPTURE_TEST").isEmpty)
+        for unrelated in ["/Users/person/project", "/tmp/skillshelf-capture-not-a-uuid", "/", "relative",
+                          "/tmp/skillshelf-capture-22222222-2222-2222-2222-222222222222"] {
+            #expect(throws: POSIXError(.EINVAL)) { try CaptureWorkingDirectory(path: unrelated, id: id) }
         }
     }
 
@@ -72,9 +75,25 @@ struct PromptCaptureTests {
         try fixture.write(".codex/sessions/existing.jsonl", "SKILLSHELF_CAPTURE_TEST")
         try fixture.write(".local/share/opencode/opencode.db", "SKILLSHELF_CAPTURE_TEST")
         let adapter = try #require(CaptureAdapters.adapter(for: harness))
+        let workingDirectory = try CaptureWorkingDirectory(
+            path: "/tmp/skillshelf-capture-11111111-1111-1111-1111-111111111111",
+            id: #require(UUID(uuidString: "11111111-1111-1111-1111-111111111111"))
+        )
         #expect(adapter.cleanupPaths(
-            fixture.home, "/tmp/skillshelf-capture-11111111-1111-1111-1111-111111111111", "SKILLSHELF_CAPTURE_TEST"
+            fixture.home, workingDirectory, "SKILLSHELF_CAPTURE_TEST"
         ).isEmpty)
+    }
+
+    @Test(arguments: ["project", "skillshelf-capture-22222222-2222-2222-2222-222222222222"])
+    func captureWorkingDirectoryRejectsCanonicalPathForAnotherRun(targetName: String) throws {
+        let dir = try TempDir()
+        defer { dir.remove() }
+        let id = try #require(UUID(uuidString: "11111111-1111-1111-1111-111111111111"))
+        let target = dir.path + "/" + targetName
+        let cwd = dir.path + "/skillshelf-capture-11111111-1111-1111-1111-111111111111"
+        try FileManager.default.createDirectory(atPath: target, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(atPath: cwd, withDestinationPath: target)
+        #expect(throws: POSIXError(.EINVAL)) { try CaptureWorkingDirectory(path: cwd, id: id) }
     }
 
     @Test func mcpFailureLinesBecomeNotes() {
@@ -162,6 +181,95 @@ struct PromptCaptureTests {
         }
         #expect(try FileManager.default.contentsOfDirectory(atPath: dir.path + "/.claude/projects") == ["unrelated"])
         try expectCleanup(dir, launcher: launcher)
+    }
+
+    @Test(arguments: ["project", "skillshelf-capture-22222222-2222-2222-2222-222222222222", "sameCaptureName"])
+    func claudeSessionCleanupCannotBeRedirectedByCwdReplacement(replacementName: String) async throws {
+        let dir = try TempDir()
+        defer { dir.remove() }
+        let launcher = CleanupFixtureLauncher { cwd in
+            let name = replacementName == "sameCaptureName" ? URL(fileURLWithPath: cwd).lastPathComponent : replacementName
+            let replacement = dir.path + "/unrelated/" + name
+            try FileManager.default.createDirectory(atPath: replacement, withIntermediateDirectories: true)
+            try "project".write(toFile: replacement + "/keep", atomically: true, encoding: .utf8)
+            for path in Set([cwd, URL(fileURLWithPath: cwd).resolvingSymlinksInPath().path,
+                             URL(fileURLWithPath: replacement).resolvingSymlinksInPath().path]) {
+                let project = path.replacingOccurrences(of: "[^a-zA-Z0-9]", with: "-", options: .regularExpression)
+                let artifact = dir.path + "/.claude/projects/" + project
+                try FileManager.default.createDirectory(atPath: artifact, withIntermediateDirectories: true)
+                try "history".write(toFile: artifact + "/session.jsonl", atomically: true, encoding: .utf8)
+            }
+            try FileManager.default.removeItem(atPath: cwd)
+            try FileManager.default.createSymbolicLink(atPath: cwd, withDestinationPath: replacement)
+        }
+        let capture = PromptCapture(
+            launcher: launcher, resolveTool: { _ in "/fake/claude" },
+            loginEnvironment: { ["HOME": dir.path, "PATH": "/usr/bin:/bin"] },
+            capturesRoot: dir.path + "/captures", tempRoot: dir.path + "/tmp"
+        )
+        let adapter = try #require(CaptureAdapters.adapter(for: .claude))
+        await #expect(throws: CaptureError.noRequest(version: nil)) { try await capture.run(adapter, version: nil) }
+        let projects = try FileManager.default.contentsOfDirectory(atPath: dir.path + "/.claude/projects")
+        #expect(projects.count == 1)
+        let unrelated = try #require(FileManager.default.contentsOfDirectory(atPath: dir.path + "/unrelated").first)
+        let replacement = dir.path + "/unrelated/" + unrelated
+        let project = URL(fileURLWithPath: replacement).resolvingSymlinksInPath().path
+            .replacingOccurrences(of: "[^a-zA-Z0-9]", with: "-", options: .regularExpression)
+        #expect(projects == [project])
+        #expect(try String(contentsOfFile: dir.path + "/.claude/projects/" + project + "/session.jsonl", encoding: .utf8) == "history")
+        #expect(try String(contentsOfFile: replacement + "/keep", encoding: .utf8) == "project")
+        #expect(try FileManager.default.contentsOfDirectory(atPath: dir.path + "/tmp").isEmpty)
+    }
+
+    @Test(arguments: [true, false])
+    func claudeSessionCleanupUnlinksProjectSymlinks(targetExists: Bool) async throws {
+        let dir = try TempDir()
+        defer { dir.remove() }
+        let target = dir.path + "/unrelated"
+        if targetExists {
+            try FileManager.default.createDirectory(atPath: target, withIntermediateDirectories: true)
+            try "history".write(toFile: target + "/session.jsonl", atomically: true, encoding: .utf8)
+        }
+        let launcher = CleanupFixtureLauncher { cwd in
+            let projects = dir.path + "/.claude/projects"
+            try FileManager.default.createDirectory(atPath: projects, withIntermediateDirectories: true)
+            for path in Set([cwd, URL(fileURLWithPath: cwd).resolvingSymlinksInPath().path]) {
+                let name = path.replacingOccurrences(of: "[^a-zA-Z0-9]", with: "-", options: .regularExpression)
+                try FileManager.default.createSymbolicLink(atPath: projects + "/" + name, withDestinationPath: target)
+            }
+        }
+        let capture = PromptCapture(
+            launcher: launcher, resolveTool: { _ in "/fake/claude" }, loginEnvironment: { ["HOME": dir.path] },
+            capturesRoot: dir.path + "/captures", tempRoot: dir.path + "/tmp"
+        )
+        let adapter = try #require(CaptureAdapters.adapter(for: .claude))
+        await #expect(throws: CaptureError.noRequest(version: nil)) { try await capture.run(adapter, version: nil) }
+        #expect(try FileManager.default.contentsOfDirectory(atPath: dir.path + "/.claude/projects").isEmpty)
+        if targetExists {
+            #expect(try String(contentsOfFile: target + "/session.jsonl", encoding: .utf8) == "history")
+        } else {
+            #expect(!FileManager.default.fileExists(atPath: target))
+        }
+        #expect(try FileManager.default.contentsOfDirectory(atPath: dir.path + "/tmp").isEmpty)
+    }
+
+    @Test func claudeSessionCleanupRejectsUnattributedHookPaths() async throws {
+        let dir = try TempDir()
+        defer { dir.remove() }
+        let unrelated = dir.path + "/.claude/projects/unrelated"
+        try FileManager.default.createDirectory(atPath: unrelated, withIntermediateDirectories: true)
+        try "history".write(toFile: unrelated + "/session.jsonl", atomically: true, encoding: .utf8)
+        let capture = PromptCapture(
+            launcher: CleanupFixtureLauncher { _ in }, resolveTool: { _ in "/fake/claude" },
+            loginEnvironment: { ["HOME": dir.path] }, capturesRoot: dir.path + "/captures", tempRoot: dir.path + "/tmp"
+        )
+        let adapter = CaptureAdapter(
+            harness: .claude, tool: "fake", format: .anthropic, unixSockets: [],
+            cleanupPaths: { _, _, _ in [unrelated] }
+        ) { _, _ in ([], [:]) }
+        await #expect(throws: CaptureError.noRequest(version: nil)) { try await capture.run(adapter, version: nil) }
+        #expect(try String(contentsOfFile: unrelated + "/session.jsonl", encoding: .utf8) == "history")
+        #expect(try FileManager.default.contentsOfDirectory(atPath: dir.path + "/tmp").isEmpty)
     }
 
     @Test func secondCaptureWhileBusyThrows() async throws {
@@ -438,6 +546,23 @@ struct PromptCaptureTests {
             #expect(result == -1 && errno == ECONNREFUSED)
         }
     }
+}
+
+private struct CleanupFixtureLauncher: CaptureProcessLaunching {
+    let onLaunch: @Sendable (String) throws -> Void
+
+    func launch(argv: [String], environment: [String: String], cwd: String) throws -> any CaptureProcessHandle {
+        try onLaunch(cwd)
+        return ExitedCaptureProcess()
+    }
+}
+
+private struct ExitedCaptureProcess: CaptureProcessHandle {
+    let pid: pid_t = 0
+
+    func terminate() async {}
+    func exitStatus() async -> Int32 { 0 }
+    func diagnostics() async -> (stdout: String, stderr: String) { ("", "") }
 }
 
 private final class RecordingLauncher: CaptureProcessLaunching {

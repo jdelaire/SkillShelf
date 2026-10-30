@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 public actor PromptCapture {
@@ -30,11 +31,13 @@ public actor PromptCapture {
         defer { isRunning = false }
         let sentinel = "SKILLSHELF_CAPTURE_" + UUID().uuidString
         let listener = CaptureListener(format: adapter.format)
+        let directoryID = UUID()
         let directory = URL(fileURLWithPath: tempRoot, isDirectory: true)
-            .appendingPathComponent("skillshelf-capture-" + UUID().uuidString).path
+            .appendingPathComponent("skillshelf-capture-" + directoryID.uuidString).path
         let stop = AsyncStream<Void>.makeStream()
         return try await withTaskCancellationHandler {
             var process: (any CaptureProcessHandle)?
+            var workingDirectory: CaptureWorkingDirectory?
             var home = NSHomeDirectory()
             do {
                 try Task.checkCancellation()
@@ -53,13 +56,17 @@ public actor PromptCapture {
                 try FileManager.default.createDirectory(
                     atPath: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700]
                 )
+                workingDirectory = try CaptureWorkingDirectory(path: directory, id: directoryID)
                 let command = [executable] + launch.arguments
                 let argv = try CaptureSandbox.wrap(command, port: port, unixSockets: adapter.unixSockets)
                 try Task.checkCancellation()
                 let handle = try launcher.launch(argv: argv, environment: environment, cwd: directory)
                 process = handle
                 let requests = await collect(listener: listener, process: handle, sentinel: sentinel, stop: stop)
-                try await cleanUp(process: handle, listener: listener, directory: directory, adapter: adapter, home: home, sentinel: sentinel)
+                try await cleanUp(
+                    process: handle, listener: listener, directory: directory, workingDirectory: workingDirectory,
+                    adapter: adapter, home: home, sentinel: sentinel
+                )
                 process = nil
                 try Task.checkCancellation()
                 guard !requests.isEmpty else { throw CaptureError.noRequest(version: version) }
@@ -79,7 +86,10 @@ public actor PromptCapture {
                 return try record.save(to: URL(fileURLWithPath: capturesRoot, isDirectory: true)
                     .appendingPathComponent(adapter.harness.rawValue).path)
             } catch {
-                try await cleanUp(process: process, listener: listener, directory: directory, adapter: adapter, home: home, sentinel: sentinel)
+                try await cleanUp(
+                    process: process, listener: listener, directory: directory, workingDirectory: workingDirectory,
+                    adapter: adapter, home: home, sentinel: sentinel
+                )
                 try Task.checkCancellation()
                 throw error
             }
@@ -128,20 +138,34 @@ public actor PromptCapture {
 
     private func cleanUp(
         process: (any CaptureProcessHandle)?, listener: CaptureListener, directory: String,
-        adapter: CaptureAdapter, home: String, sentinel: String
+        workingDirectory: CaptureWorkingDirectory?, adapter: CaptureAdapter, home: String, sentinel: String
     ) async throws {
         if let process {
             await process.terminate()
             _ = await process.exitStatus()
         }
         await listener.stop()
-        if process != nil {
-            for path in adapter.cleanupPaths(home, directory, sentinel) where FileManager.default.fileExists(atPath: path) {
-                try FileManager.default.removeItem(atPath: path)
+        if process != nil, let workingDirectory {
+            let allowed = adapter.harness == .claude ? Set(workingDirectory.claudeProjectPaths(home: home)) : []
+            for path in adapter.cleanupPaths(home, workingDirectory, sentinel) where allowed.contains(path) {
+                try removeWithoutFollowingSymlink(path)
             }
         }
-        if FileManager.default.fileExists(atPath: directory) {
-            try FileManager.default.removeItem(atPath: directory)
+        try removeWithoutFollowingSymlink(directory)
+    }
+
+    private func removeWithoutFollowingSymlink(_ path: String) throws {
+        var info = stat()
+        guard lstat(path, &info) == 0 else {
+            if errno == ENOENT { return }
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        if info.st_mode & S_IFMT == S_IFLNK {
+            guard unlink(path) == 0 || errno == ENOENT else {
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
+        } else {
+            try FileManager.default.removeItem(atPath: path)
         }
     }
 }
