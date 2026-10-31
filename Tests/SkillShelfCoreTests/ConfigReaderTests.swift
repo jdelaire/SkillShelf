@@ -67,11 +67,17 @@ import Testing
         "\"x#y\" = \"\"\"\n[compat.claude]\nskills = false\n\"\"\"",
         "\"x=y\" = \"\"\"\n[compat.claude]\nskills = false\n\"\"\"",
         "\"bad\\q\" = \"\"\"\n[compat.claude]\nskills = false\n\"\"\"",
-        "'a=\"\"\"' = \"ignored\"\nafter = true\ndeveloper_instructions = \"\"\"\n[compat.claude]\nskills = false\n\"\"\"",
     ])
     func tomlNeverPublishesAssignmentsInsideValues(_ input: String) {
         let toml = TOMLKeys(input + "\nafter = true")
         #expect(toml["compat.claude.skills"] == nil)
+        #expect(toml.bool("after") == true)
+    }
+
+    @Test func tomlKeepsKeysAfterQuotedKeyHoldingStringOpener() {
+        let toml = TOMLKeys("'a=\"\"\"' = \"ignored\"\nkept = true\ndeveloper_instructions = \"\"\"\n[compat.claude]\nskills = false\n\"\"\"\nafter = true")
+        #expect(toml["compat.claude.skills"] == nil)
+        #expect(toml.bool("kept") == true)
         #expect(toml.bool("after") == true)
     }
 
