@@ -3,6 +3,20 @@ import Testing
 @testable import SkillShelfCore
 
 struct PromptContentTests {
+    @Test func tomlGlobalContentExcludesQuotedProfileValues() async throws {
+        let f = try Fixture(installed: [.codex]); defer { f.remove() }
+        try f.write(".codex/config.toml", #"""
+        instructions = "global"
+        [profiles."review"]
+        instructions = "profile-only"
+        developer_instructions = "profile-only"
+        """#)
+        let path = f.layout.path(".codex/config.toml")
+        #expect(await PromptContent.load(part(.file(path: path, key: "instructions")), fetcher: FailingFetcher()) == .code("global", language: "text"))
+        let missing = await PromptContent.load(part(.file(path: path, key: "developer_instructions")), fetcher: FailingFetcher())
+        guard case .failed = missing else { Issue.record("Profile-only key must not load as global content"); return }
+    }
+
     @Test func tomlKeyPartIsCode() async throws {
         let f = try Fixture(); defer { f.remove() }
         let text = "developer_instructions = \"\"\"\nA\nB\"\"\"\ninstructions = \"other\""

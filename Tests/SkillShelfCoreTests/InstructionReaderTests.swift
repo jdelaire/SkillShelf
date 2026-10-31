@@ -434,6 +434,23 @@ import Testing
         #expect(parts.first { $0.title == "~/m.md" }?.notes.contains("Replaces the base prompt") == true)
     }
 
+    @Test func codexQuotedProfileInstructionsDoNotBecomeGlobalParts() throws {
+        let f = try Fixture(installed: [.codex]); defer { f.remove() }
+        try f.write(".codex/AGENTS.md", "global")
+        try f.write(".codex/config.toml", #"""
+        instructions = "global"
+        [profiles."review"]
+        developer_instructions = "profile-only"
+        model_instructions_file = "profile.md"
+        """#)
+        try f.write(".codex/profile.md", "profile-only")
+        let parts = InstructionReader.parts(layout: f.layout, harness: .codex, environment: [:])
+        #expect(parts.map(\.source) == [
+            .file(path: f.layout.path(".codex/AGENTS.md"), key: nil),
+            .file(path: f.layout.path(".codex/config.toml"), key: "instructions"),
+        ])
+    }
+
     @Test func codexHomeAndEmptyOverridePreserveInstructionOrder() throws {
         let f = try Fixture(); defer { f.remove() }
         try f.write("custom/AGENTS.override.md", "")

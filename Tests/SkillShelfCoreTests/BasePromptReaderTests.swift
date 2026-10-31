@@ -62,6 +62,23 @@ struct BasePromptReaderTests {
         #expect(try String(contentsOfFile: f.layout.path("custom/config.toml"), encoding: .utf8) == "model = \"b\"")
     }
 
+    @Test func codexQuotedProfileModelDoesNotOverrideConfiguredModel() async throws {
+        let f = try Fixture(installed: [.codex]); defer { f.remove() }
+        try f.write(".codex/models_cache.json", #"{"models":[{"slug":"profile"},{"slug":"global"}]}"#)
+        try f.write(".codex/config.toml", #"""
+        model = "global"
+        [profiles."review"]
+        model = "profile"
+        """#)
+        let result = await BasePromptReader.read(
+            harness: .codex, layout: f.layout, runner: StubRunner(output: "0.164.0"),
+            fetcher: FailingFetcher(), cacheRoot: f.layout.path("cache"), environment: [:]
+        )
+        #expect(result.parts.map(\.title) == ["global", "profile"])
+        #expect(result.parts.first?.notes == ["Configured model"])
+        #expect(result.parts.last?.notes.isEmpty == true)
+    }
+
     @Test(arguments: ["", "{}", "{\"models\":[]}", "{\"models\":{}}", "invalid"])
     func codexMissingOrUnreadableCacheFallsBackLazily(_ contents: String) async throws {
         let f = try Fixture(); defer { f.remove() }

@@ -2,6 +2,26 @@ import Testing
 @testable import SkillShelfCore
 
 @Suite struct ConfigReaderTests {
+    @Test(arguments: [#"[profiles."review"]"#, "[profiles.'review']", "[[profiles.review]]", "[profiles.review] trailing"])
+    func tomlUnsupportedHeadersSuspendAssignmentsUntilKnownSection(_ header: String) {
+        let toml = TOMLKeys("""
+        model = "global"
+        \(header)
+        model = "profile"
+        developer_instructions = "profile-only"
+        [compat.claude]
+        rules = false
+        \(header)
+        rules = true
+        [paths]
+        extra_rule_dirs = ["~/rules"]
+        """)
+        #expect(toml.string("model") == "global")
+        #expect(toml.string("developer_instructions") == nil)
+        #expect(toml.bool("compat.claude.rules") == false)
+        #expect(toml.strings("paths.extra_rule_dirs") == ["~/rules"])
+    }
+
     @Test func tomlReadsStringsBoolsArraysAndMultiline() {
         let toml = TOMLKeys("""
         model = "gpt-6.1-sol"

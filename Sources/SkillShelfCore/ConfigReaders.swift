@@ -48,7 +48,7 @@ private struct TOMLLexer {
     mutating func read() -> (values: [String: TOMLValue], sections: Set<String>) {
         var values: [String: TOMLValue] = [:]
         var sections = Set<String>()
-        var section = ""
+        var section: String? = ""
         while offset < input.count {
             skipHorizontalWhitespace()
             let start = offset
@@ -57,9 +57,10 @@ private struct TOMLLexer {
                     section = name
                     sections.insert(name)
                 } else {
+                    section = nil
                     offset = start
                 }
-            } else if let key = readKey(), let value = readValue(), atLineEnd() {
+            } else if let section, let key = readKey(), let value = readValue(), atLineEnd() {
                 values[section.isEmpty ? key : section + "." + key] = value
             } else {
                 offset = start
