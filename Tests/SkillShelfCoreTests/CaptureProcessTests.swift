@@ -40,7 +40,7 @@ struct CaptureProcessTests {
         let address = try #require(LocalAddresses.nonLoopbackIPv4().first, "needs a non-loopback interface")
         let tcp = try TestTCPServer(bind: "0.0.0.0")
         defer { tcp.close() }
-        let remote = "/usr/bin/nc -z -v -G 1 \(address) \(tcp.port) 2>&1; echo $?"
+        let remote = "/usr/bin/nc -z -v -G 5 \(address) \(tcp.port) 2>&1; echo $?"
         #expect(try runShell(remote).hasSuffix("0"))
         #expect(try runShell(remote, sandboxPort: 9).contains("Operation not permitted"))
         let unix = try TestUnixServer()

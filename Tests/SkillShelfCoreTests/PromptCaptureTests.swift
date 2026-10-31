@@ -159,19 +159,19 @@ struct PromptCaptureTests {
         sleep 60
         """)
         let launcher = RecordingLauncher()
-        let capture = capture(dir, script: script, launcher: launcher, timeout: .seconds(1), environment: [
+        let capture = capture(dir, script: script, launcher: launcher, timeout: .seconds(outcome == "noRequest" ? 10 : 60), environment: [
             "PATH": "/usr/bin:/bin", "HOME": dir.path, "OUTCOME": outcome
         ])
         let adapter = try #require(CaptureAdapters.adapter(for: .claude))
         let task = Task { try await capture.run(adapter, version: nil) }
+        do {
+            try await waitForFile(dir.path + "/ready", timeout: .seconds(10))
+        } catch {
+            task.cancel()
+            _ = await task.result
+            throw error
+        }
         if outcome == "cancelled" {
-            do {
-                try await waitForFile(dir.path + "/ready", timeout: .seconds(10))
-            } catch {
-                task.cancel()
-                _ = await task.result
-                throw error
-            }
             task.cancel()
             await #expect(throws: CancellationError.self) { try await task.value }
         } else if outcome == "noRequest" {
@@ -299,6 +299,40 @@ struct PromptCaptureTests {
             #expect(try FileManager.default.contentsOfDirectory(atPath: original + "/.claude/projects").isEmpty)
         }
         #expect(try FileManager.default.contentsOfDirectory(atPath: dir.path + "/tmp").isEmpty)
+    }
+
+    @Test(arguments: ["home", "ancestor"], ["", "/", "/."])
+    func claudeSessionCleanupRefusesReplacedHomeDirectory(component: String, suffix: String) async throws {
+        let dir = try TempDir()
+        defer { dir.remove() }
+        let home = dir.path + "/parent/home"
+        try FileManager.default.createDirectory(atPath: home, withIntermediateDirectories: true)
+        let script = try script(dir, """
+        for sentinel in "$@"; do :; done
+        project=$(/bin/pwd -P | /usr/bin/sed 's/[^a-zA-Z0-9]/-/g')
+        replacement="$ROOT/replacement\(component == "ancestor" ? "/home" : "")"
+        /bin/mkdir -p "$HOME/.claude/projects/$project" "$replacement/.claude/projects/$project"
+        echo capture > "$HOME/.claude/projects/$project/session.jsonl"
+        echo history > "$replacement/.claude/projects/$project/session.jsonl"
+        /bin/mv "$ROOT/parent\(component == "home" ? "/home" : "")" "$ROOT/parked"
+        /bin/mv "$ROOT/replacement" "$ROOT/parent\(component == "home" ? "/home" : "")"
+        /usr/bin/curl --noproxy '*' -s -X POST "$ANTHROPIC_BASE_URL/v1/messages" -d "{\\"tools\\":[{}],\\"input\\":\\"$sentinel\\"}"
+        """)
+        let launcher = RecordingLauncher()
+        let capture = capture(dir, script: script, launcher: launcher, environment: [
+            "HOME": home + suffix, "ROOT": dir.path, "PATH": "/usr/bin:/bin"
+        ])
+        let adapter = try #require(CaptureAdapters.adapter(for: .claude))
+        let record = try CaptureRecord.load(try await capture.run(adapter, version: nil))
+        let parked = dir.path + "/parked" + (component == "ancestor" ? "/home" : "")
+        let originalProjects = try FileManager.default.contentsOfDirectory(atPath: parked + "/.claude/projects")
+        #expect(originalProjects.count == 1)
+        for project in originalProjects {
+            #expect((try? String(contentsOfFile: home + "/.claude/projects/" + project + "/session.jsonl", encoding: .utf8)) == "history\n")
+            #expect(try String(contentsOfFile: parked + "/.claude/projects/" + project + "/session.jsonl", encoding: .utf8) == "capture\n")
+        }
+        #expect(record.notes.contains("Capture cleanup skipped: home directory changed during capture"))
+        try expectCleanup(dir, launcher: launcher)
     }
 
     @Test(arguments: [".claude", ".claude/projects"])

@@ -4,6 +4,36 @@ import Foundation
 final class CaptureArtifactDirectory {
     private let descriptor: Int32
 
+    final class Home {
+        private let path: String
+        fileprivate let descriptor: Int32
+        private let device: dev_t
+        private let inode: ino_t
+
+        init(canonicalPath: String) throws {
+            let descriptor = try CaptureArtifactDirectory.openHome(canonicalPath)
+            var info = stat()
+            guard fstat(descriptor, &info) == 0 else {
+                let error = POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+                close(descriptor)
+                throw error
+            }
+            path = canonicalPath
+            self.descriptor = descriptor
+            device = info.st_dev
+            inode = info.st_ino
+        }
+
+        deinit { close(descriptor) }
+
+        func matchesPath() -> Bool {
+            guard let current = try? CaptureArtifactDirectory.openHome(path) else { return false }
+            defer { close(current) }
+            var info = stat()
+            return fstat(current, &info) == 0 && info.st_dev == device && info.st_ino == inode
+        }
+    }
+
     static func canonicalHome(_ home: String) throws -> String {
         guard home.hasPrefix("/"), !home.utf8.contains(0) else { throw POSIXError(.EINVAL) }
         guard let resolved = realpath(home, nil) else {
@@ -14,7 +44,16 @@ final class CaptureArtifactDirectory {
         return path
     }
 
-    init?(home: String) throws {
+    init?(home: Home) throws {
+        guard let claude = try Self.openDirectory(".claude", relativeTo: home.descriptor) else { return nil }
+        defer { close(claude) }
+        guard let projects = try Self.openDirectory("projects", relativeTo: claude) else { return nil }
+        descriptor = projects
+    }
+
+    deinit { close(descriptor) }
+
+    private static func openHome(_ home: String) throws -> Int32 {
         guard home.hasPrefix("/"), !home.utf8.contains(0) else { throw POSIXError(.EINVAL) }
         let components = home == "/" ? [] : home.dropFirst().split(separator: "/", omittingEmptySubsequences: false)
         guard components.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }) else {
@@ -23,16 +62,15 @@ final class CaptureArtifactDirectory {
         var parent = open("/", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         guard parent >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
         defer { if parent >= 0 { close(parent) } }
-        for component in components.map(String.init) + [".claude", "projects"] {
-            guard let child = try Self.openDirectory(component, relativeTo: parent) else { return nil }
+        for component in components {
+            guard let child = try openDirectory(String(component), relativeTo: parent) else { throw POSIXError(.ENOENT) }
             close(parent)
             parent = child
         }
-        descriptor = parent
+        let descriptor = parent
         parent = -1
+        return descriptor
     }
-
-    deinit { close(descriptor) }
 
     func removeProject(named name: String) throws {
         guard !name.isEmpty, name != ".", name != "..", !name.contains("/"), !name.utf8.contains(0) else {

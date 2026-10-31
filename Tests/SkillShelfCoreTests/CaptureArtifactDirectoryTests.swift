@@ -19,7 +19,7 @@ struct CaptureArtifactDirectoryTests {
         try FileManager.default.createSymbolicLink(atPath: home, withDestinationPath: target)
         let path = home + (component == "ancestor" ? "/nested" : "") + suffix
         #expect(throws: POSIXError.self) {
-            let cleanup = try #require(try CaptureArtifactDirectory(home: path))
+            let cleanup = try #require(try CaptureArtifactDirectory(home: .init(canonicalPath: path)))
             try cleanup.removeProject(named: "capture")
         }
         #expect((try? String(contentsOfFile: transcript, encoding: .utf8)) == "history")
@@ -57,7 +57,7 @@ struct CaptureArtifactDirectoryTests {
                 leaf = child
                 created += 1
             }
-            let cleanup = try #require(try CaptureArtifactDirectory(home: dir.path))
+            let cleanup = try #require(try CaptureArtifactDirectory(home: .init(canonicalPath: dir.path)))
             do {
                 try cleanup.removeProject(named: "capture")
                 removed = true
@@ -79,13 +79,13 @@ struct CaptureArtifactDirectoryTests {
         let nested = project + "/" + String(repeating: "世", count: 80)
         try FileManager.default.createDirectory(atPath: nested, withIntermediateDirectories: true)
         try "capture".write(toFile: nested + "/café.jsonl", atomically: true, encoding: .utf8)
-        let cleanup = try #require(try CaptureArtifactDirectory(home: dir.path))
+        let cleanup = try #require(try CaptureArtifactDirectory(home: .init(canonicalPath: dir.path)))
         try cleanup.removeProject(named: "capture")
         #expect(!FileManager.default.fileExists(atPath: project))
     }
 
-    @Test(arguments: [".claude", ".claude/projects"])
-    func pinnedCleanupSurvivesAncestorSwap(ancestor: String) throws {
+    @Test(arguments: [".claude", ".claude/projects"], ["symlink", "directory"])
+    func pinnedCleanupSurvivesAncestorSwap(ancestor: String, kind: String) throws {
         let dir = try TempDir()
         defer { dir.remove() }
         let projects = dir.path + "/.claude/projects"
@@ -94,16 +94,46 @@ struct CaptureArtifactDirectoryTests {
             try FileManager.default.createDirectory(atPath: parent + "/capture/nested", withIntermediateDirectories: true)
             try contents.write(toFile: parent + "/capture/nested/session.jsonl", atomically: true, encoding: .utf8)
         }
-        let cleanup = try #require(try CaptureArtifactDirectory(home: dir.path))
+        let cleanup = try #require(try CaptureArtifactDirectory(home: .init(canonicalPath: dir.path)))
         try FileManager.default.moveItem(atPath: dir.path + "/" + ancestor, toPath: dir.path + "/parked")
-        try FileManager.default.createSymbolicLink(
-            atPath: dir.path + "/" + ancestor,
-            withDestinationPath: dir.path + "/unrelated" + (ancestor == ".claude" ? "" : "/projects")
-        )
+        let replacement = dir.path + "/unrelated" + (ancestor == ".claude" ? "" : "/projects")
+        if kind == "symlink" {
+            try FileManager.default.createSymbolicLink(atPath: dir.path + "/" + ancestor, withDestinationPath: replacement)
+        } else {
+            try FileManager.default.moveItem(atPath: replacement, toPath: dir.path + "/" + ancestor)
+        }
         try cleanup.removeProject(named: "capture")
-        #expect(try String(contentsOfFile: unrelated + "/capture/nested/session.jsonl", encoding: .utf8) == "history")
+        #expect(try String(contentsOfFile: projects + "/capture/nested/session.jsonl", encoding: .utf8) == "history")
         let pinnedProjects = dir.path + "/parked" + (ancestor == ".claude" ? "/projects" : "")
         #expect(try FileManager.default.contentsOfDirectory(atPath: pinnedProjects).isEmpty)
+    }
+
+    @Test(arguments: ["home", "ancestor"], ["symlink", "directory"])
+    func pinnedHomeSurvivesReplacementAfterIdentityCheck(component: String, kind: String) throws {
+        let dir = try TempDir()
+        defer { dir.remove() }
+        let home = dir.path + "/parent/home"
+        let unrelated = dir.path + "/unrelated" + (component == "ancestor" ? "/home" : "")
+        try FileManager.default.createDirectory(atPath: home, withIntermediateDirectories: true)
+        let pinned = try CaptureArtifactDirectory.Home(canonicalPath: home)
+        #expect(pinned.matchesPath())
+        for (parent, contents) in [(home, "capture"), (unrelated, "history")] {
+            try FileManager.default.createDirectory(atPath: parent + "/.claude/projects/capture", withIntermediateDirectories: true)
+            try contents.write(toFile: parent + "/.claude/projects/capture/session.jsonl", atomically: true, encoding: .utf8)
+        }
+        let path = dir.path + "/parent" + (component == "home" ? "/home" : "")
+        try FileManager.default.moveItem(atPath: path, toPath: dir.path + "/parked")
+        if kind == "symlink" {
+            try FileManager.default.createSymbolicLink(atPath: path, withDestinationPath: dir.path + "/unrelated")
+        } else {
+            try FileManager.default.moveItem(atPath: dir.path + "/unrelated", toPath: path)
+        }
+        #expect(!pinned.matchesPath())
+        let cleanup = try #require(try CaptureArtifactDirectory(home: pinned))
+        try cleanup.removeProject(named: "capture")
+        #expect(try String(contentsOfFile: home + "/.claude/projects/capture/session.jsonl", encoding: .utf8) == "history")
+        let parked = dir.path + "/parked" + (component == "ancestor" ? "/home" : "")
+        #expect(try FileManager.default.contentsOfDirectory(atPath: parked + "/.claude/projects").isEmpty)
     }
 
     @Test(arguments: ["home", ".claude", ".claude/projects"], ["symlink", "file"])
@@ -122,7 +152,7 @@ struct CaptureArtifactDirectoryTests {
         } else {
             try "history".write(toFile: path, atomically: true, encoding: .utf8)
         }
-        #expect(throws: POSIXError.self) { try CaptureArtifactDirectory(home: home) }
+        #expect(throws: POSIXError.self) { try CaptureArtifactDirectory(home: .init(canonicalPath: home)) }
         #expect(try String(contentsOfFile: target + "/session.jsonl", encoding: .utf8) == "history")
         if kind == "file" {
             #expect(try String(contentsOfFile: path, encoding: .utf8) == "history")
@@ -132,9 +162,9 @@ struct CaptureArtifactDirectoryTests {
     @Test func missingArtifactsAreHarmless() throws {
         let dir = try TempDir()
         defer { dir.remove() }
-        #expect(try CaptureArtifactDirectory(home: dir.path) == nil)
+        #expect(try CaptureArtifactDirectory(home: .init(canonicalPath: dir.path)) == nil)
         try FileManager.default.createDirectory(atPath: dir.path + "/.claude/projects/unrelated", withIntermediateDirectories: true)
-        let cleanup = try #require(try CaptureArtifactDirectory(home: dir.path))
+        let cleanup = try #require(try CaptureArtifactDirectory(home: .init(canonicalPath: dir.path)))
         try cleanup.removeProject(named: "missing")
         #expect(try FileManager.default.contentsOfDirectory(atPath: dir.path + "/.claude/projects") == ["unrelated"])
     }
@@ -144,7 +174,7 @@ struct CaptureArtifactDirectoryTests {
         let dir = try TempDir()
         defer { dir.remove() }
         try FileManager.default.createDirectory(atPath: dir.path + "/.claude/projects", withIntermediateDirectories: true)
-        let cleanup = try #require(try CaptureArtifactDirectory(home: dir.path))
+        let cleanup = try #require(try CaptureArtifactDirectory(home: .init(canonicalPath: dir.path)))
         #expect(throws: POSIXError(.EINVAL)) { try cleanup.removeProject(named: name) }
         #expect(FileManager.default.fileExists(atPath: dir.path + "/.claude/projects"))
     }
