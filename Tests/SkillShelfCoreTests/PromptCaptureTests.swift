@@ -125,19 +125,21 @@ struct PromptCaptureTests {
         let capture = capture(dir, script: script, launcher: launcher)
         let start = ContinuousClock.now
         let path = try await capture.run(adapter(), version: "1.0")
-        #expect(ContinuousClock.now - start < .seconds(10))
+        let elapsed = ContinuousClock.now - start
         let record = try CaptureRecord.load(path)
-        #expect(record.requests.count == 1)
-        #expect(record.notes.contains("MCP server remote failed"))
-        #expect(record.notes.contains("MCP server local failed"))
-        #expect(record.notes.contains("Placeholder auth: account-specific text may differ"))
-        let sentinel = try #require(record.notes.first { $0.hasPrefix("sentinel: ") })
-        #expect(sentinel.hasPrefix("sentinel: SKILLSHELF_CAPTURE_"))
-        #expect(CaptureParser.mainRequest(record.requests, sentinel: String(sentinel.dropFirst(10))) == .found(0))
-        #expect(!(try String(contentsOfFile: path, encoding: .utf8)).localizedCaseInsensitiveContains("user-agent"))
-        #expect(try FileManager.default.attributesOfItem(atPath: path)[.posixPermissions] as? Int == 0o600)
-        #expect(try FileManager.default.attributesOfItem(atPath: dir.path + "/captures/claude")[.posixPermissions] as? Int == 0o700)
-        try expectCleanup(dir, launcher: launcher)
+        let diagnostics = requestDiagnostics(record, launcher: launcher)
+        #expect(elapsed < .seconds(10), diagnostics)
+        #expect(record.requests.count == 1, diagnostics)
+        #expect(record.notes.contains("MCP server remote failed"), diagnostics)
+        #expect(record.notes.contains("MCP server local failed"), diagnostics)
+        #expect(record.notes.contains("Placeholder auth: account-specific text may differ"), diagnostics)
+        let sentinel = try #require(record.notes.first { $0.hasPrefix("sentinel: ") }, diagnostics)
+        #expect(sentinel.hasPrefix("sentinel: SKILLSHELF_CAPTURE_"), diagnostics)
+        #expect(CaptureParser.mainRequest(record.requests, sentinel: String(sentinel.dropFirst(10))) == .found(0), diagnostics)
+        #expect(!(try String(contentsOfFile: path, encoding: .utf8)).localizedCaseInsensitiveContains("user-agent"), diagnostics)
+        #expect(try FileManager.default.attributesOfItem(atPath: path)[.posixPermissions] as? Int == 0o600, diagnostics)
+        #expect(try FileManager.default.attributesOfItem(atPath: dir.path + "/captures/claude")[.posixPermissions] as? Int == 0o700, diagnostics)
+        try expectCleanup(dir, launcher: launcher, diagnostics: diagnostics)
     }
 
     @Test(arguments: ["found", "noRequest", "cancelled"])
@@ -171,16 +173,18 @@ struct PromptCaptureTests {
             _ = await task.result
             throw error
         }
+        if outcome == "cancelled" { task.cancel() }
+        let result = await task.result
+        let diagnostics = requestDiagnostics(try? CaptureRecord.load(result.get()), launcher: launcher)
         if outcome == "cancelled" {
-            task.cancel()
-            await #expect(throws: CancellationError.self) { try await task.value }
+            #expect(throws: CancellationError.self, diagnostics) { try result.get() }
         } else if outcome == "noRequest" {
-            await #expect(throws: CaptureError.noRequest(version: nil)) { try await task.value }
+            #expect(throws: CaptureError.noRequest(version: nil), diagnostics) { try result.get() }
         } else {
-            _ = try await task.value
+            _ = try result.get()
         }
-        #expect(try FileManager.default.contentsOfDirectory(atPath: dir.path + "/.claude/projects") == ["unrelated"])
-        try expectCleanup(dir, launcher: launcher)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: dir.path + "/.claude/projects") == ["unrelated"], diagnostics)
+        try expectCleanup(dir, launcher: launcher, diagnostics: diagnostics)
     }
 
     @Test(arguments: ["project", "skillshelf-capture-22222222-2222-2222-2222-222222222222", "sameCaptureName"])
@@ -571,8 +575,7 @@ struct PromptCaptureTests {
         let script = try script(dir, """
         /usr/bin/printf '%05000d' 0 >&2
         echo stderr-tail >&2
-        /usr/bin/curl --noproxy '*' -s -X POST "$BASE/main" -d "{\\"tools\\":[{}],\\"input\\":\\"$1\\"}"
-        sleep 60
+        exec /usr/bin/curl --noproxy '*' -s -X POST "$BASE/main" -d "{\\"tools\\":[{}],\\"input\\":\\"$1\\"}"
         """)
         let launcher = RecordingLauncher()
         let capture = capture(dir, script: script, launcher: launcher)
@@ -580,12 +583,13 @@ struct PromptCaptureTests {
             ([sentinel, "--key=skillshelf-placeholder"], ["BASE": base])
         }
         let record = try CaptureRecord.load(try await capture.run(adapter, version: nil))
-        #expect(record.command.contains("--key=<placeholder>"))
-        #expect(record.command.allSatisfy { !$0.contains("skillshelf-placeholder") })
-        let diagnostics = try #require(record.diagnostics)
-        #expect(diagnostics.utf8.count == 4096)
-        #expect(diagnostics.hasSuffix("stderr-tail\n"))
-        try expectCleanup(dir, launcher: launcher)
+        let requestContext = requestDiagnostics(record, launcher: launcher)
+        #expect(record.command.contains("--key=<placeholder>"), requestContext)
+        #expect(record.command.allSatisfy { !$0.contains("skillshelf-placeholder") }, requestContext)
+        let diagnostics = try #require(record.diagnostics, requestContext)
+        #expect(diagnostics.utf8.count == 4096, requestContext)
+        #expect(diagnostics.hasSuffix("stderr-tail\n"), requestContext)
+        try expectCleanup(dir, launcher: launcher, diagnostics: requestContext)
     }
 
     @Test func launchFailureClosesListenerAndRemovesCwd() async throws {
@@ -648,11 +652,12 @@ struct PromptCaptureTests {
         let launcher = RecordingLauncher()
         let capture = capture(dir, script: script, launcher: launcher)
         let record = try CaptureRecord.load(try await capture.run(adapter(), version: nil))
-        #expect(record.requests.map(\.path) == ["/helper", "/guess", "/main"])
-        #expect(record.notes.contains("WebSocket upgrade refused"))
-        let note = try #require(record.notes.first { $0.hasPrefix("sentinel: ") })
-        #expect(CaptureParser.mainRequest(record.requests, sentinel: String(note.dropFirst(10))) == .found(2))
-        try expectCleanup(dir, launcher: launcher)
+        let diagnostics = requestDiagnostics(record, launcher: launcher)
+        #expect(record.requests.map(\.path) == ["/helper", "/guess", "/main"], diagnostics)
+        #expect(record.notes.contains("WebSocket upgrade refused"), diagnostics)
+        let note = try #require(record.notes.first { $0.hasPrefix("sentinel: ") }, diagnostics)
+        #expect(CaptureParser.mainRequest(record.requests, sentinel: String(note.dropFirst(10))) == .found(2), diagnostics)
+        try expectCleanup(dir, launcher: launcher, diagnostics: diagnostics)
     }
 
     @Test func invalidSandboxNeverLaunchesHarness() async throws {
@@ -707,11 +712,24 @@ struct PromptCaptureTests {
         )
     }
 
-    private func expectCleanup(_ dir: TempDir, launcher: RecordingLauncher) throws {
-        if FileManager.default.fileExists(atPath: dir.path + "/tmp") {
-            #expect(try FileManager.default.contentsOfDirectory(atPath: dir.path + "/tmp").isEmpty)
+    private func requestDiagnostics(_ record: CaptureRecord?, launcher: RecordingLauncher) -> Comment {
+        let sentinel = record?.notes.first { $0.hasPrefix("sentinel: ") } ?? "sentinel unavailable"
+        guard let record else {
+            return Comment(rawValue: "ports=\(launcher.ports); \(sentinel); no saved capture to inspect")
         }
-        #expect(launcher.pids.allSatisfy { kill(-$0, 0) == -1 })
+        let requests = record.requests.prefix(30).map { request in
+            let path = String(decoding: request.path.utf8.prefix(200), as: UTF8.self)
+            let body = String(decoding: request.body.utf8.prefix(200), as: UTF8.self)
+            return "\(request.method.prefix(16)) \(String(reflecting: path)) body=\(String(reflecting: body))"
+        }
+        return Comment(rawValue: "ports=\(launcher.ports); \(sentinel); received \(record.requests.count) requests, paths and first 200 body bytes:\n" + requests.joined(separator: "\n"))
+    }
+
+    private func expectCleanup(_ dir: TempDir, launcher: RecordingLauncher, diagnostics: Comment? = nil) throws {
+        if FileManager.default.fileExists(atPath: dir.path + "/tmp") {
+            #expect(try FileManager.default.contentsOfDirectory(atPath: dir.path + "/tmp").isEmpty, diagnostics)
+        }
+        #expect(launcher.pids.allSatisfy { kill(-$0, 0) == -1 }, diagnostics)
         for port in launcher.ports {
             let descriptor = Darwin.socket(AF_INET, SOCK_STREAM, 0)
             defer { close(descriptor) }
@@ -725,7 +743,7 @@ struct PromptCaptureTests {
                     Darwin.connect(descriptor, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
                 }
             }
-            #expect(result == -1 && errno == ECONNREFUSED)
+            #expect(result == -1 && errno == ECONNREFUSED, diagnostics)
         }
     }
 }
@@ -754,7 +772,7 @@ private final class RecordingLauncher: CaptureProcessLaunching {
     var ports: [UInt16] { state.withLock { $0.ports } }
 
     func launch(argv: [String], environment: [String: String], cwd: String) throws -> any CaptureProcessHandle {
-        if let base = environment["BASE"], let port = URL(string: base)?.port {
+        if let base = environment["BASE"] ?? environment["ANTHROPIC_BASE_URL"], let port = URL(string: base)?.port {
             state.withLock { $0.ports.append(UInt16(port)) }
         }
         let handle = try SpawnLauncher().launch(argv: argv, environment: environment, cwd: cwd)
