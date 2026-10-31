@@ -18,13 +18,26 @@ struct ContentView: View {
                             .tag(SidebarItem.harness(harness))
                     }
                 }
+                PromptSidebarSection()
             }
             .navigationSplitViewColumnWidth(min: 190, ideal: 210)
         } content: {
-            SkillTable()
-                .navigationSplitViewColumnWidth(min: 420, ideal: 560)
+            Group {
+                if case .prompts(let harness) = model.sidebar {
+                    PromptPartList(harness: harness)
+                } else {
+                    SkillTable()
+                }
+            }
+            .navigationSplitViewColumnWidth(min: 420, ideal: 560)
         } detail: {
-            if let row = model.selectedRow {
+            if case .prompts(let harness) = model.sidebar {
+                if let id = model.prompts.selection, let part = model.prompts.part(id: id), part.harness == harness {
+                    PromptTextView(part: part)
+                } else {
+                    ContentUnavailableView("No prompt selected", systemImage: "text.alignleft")
+                }
+            } else if let row = model.selectedRow {
                 SkillDetail(row: row)
             } else {
                 ContentUnavailableView("No skill selected", systemImage: "sparkles")
@@ -39,9 +52,14 @@ struct ContentView: View {
                 }
                 .help("Refresh (⌘R)")
                 .disabled(model.isScanning)
-                SkillActions(entry: model.selectedRow?.entry)
-                SearchField(text: $model.search, prompt: "Search skills")
-                    .frame(width: 220)
+                if case .prompts = model.sidebar {
+                    SearchField(text: $model.search, prompt: "Search prompts")
+                        .frame(width: 220)
+                } else {
+                    SkillActions(entry: model.selectedRow?.entry)
+                    SearchField(text: $model.search, prompt: "Search skills")
+                        .frame(width: 220)
+                }
             }
         }
         .sheet(item: $model.deleteRequest) { DeleteSheet(request: $0) }
