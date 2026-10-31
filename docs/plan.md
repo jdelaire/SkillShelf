@@ -41,6 +41,60 @@ A physical entry is scanned once per root. A harness view is the union of its ro
 - Detail: name, description, entry path, resolved path, "seen by" harness chips, buttons Reveal in Finder, Open SKILL.md, Push to all harnesses, Delete.
 - Refresh with ⌘R and on app activation.
 
+## System prompts
+
+Read-only global instructions, vendor base prompts and captured requests, one row per installed harness under "System prompts". Project instructions and provider-side text are out of scope. The list groups instructions, OpenCode agent definitions, versioned base prompts and captures. Search filters titles. Missing files and unavailable sources stay visible with a reason.
+
+### Instructions
+
+Sources appear in the harness's load order. Conditional parts say when they apply. Parts that resolve to the same file are flagged as loaded twice. Capture shows what the harness actually sends.
+
+| Harness | Sources | Conditions |
+| --- | --- | --- |
+| Claude Code | `~/.claude/CLAUDE.md`, recursive `@path` imports up to 4 hops with a cycle guard, and `~/.claude/rules/**/*.md` | Rules with `paths` frontmatter load when a matching file is read. `outputStyle` in `~/.claude/settings.json` selects a user file in `~/.claude/output-styles/`; built-in styles are unavailable. Plugin-forced styles are not detected. |
+| Codex | Non-empty `~/.codex/AGENTS.override.md`, else `~/.codex/AGENTS.md`; `instructions` and `developer_instructions` in `config.toml`. `$CODEX_HOME` overrides `~/.codex` | `model_instructions_file` replaces the base prompt. |
+| Cursor | User rules are in Cursor's server-side knowledge base | Unavailable locally; managed in Cursor Settings > Rules. |
+| OpenCode | `config.json`, `opencode.json`, `opencode.jsonc` merged in that order under `~/.config/opencode`; `~/.config/opencode/AGENTS.md`, else `~/.claude/CLAUDE.md`; every `instructions` file, glob or URL | Recursive `agents/**/*.md`, legacy `agent/**/*.md` and `agent.<name>.prompt` are separate agent definitions that replace the base prompt when selected. `default_agent` marks the active agent; without it, none is marked, and Capture shows which first enabled primary agent OpenCode uses. |
+| Grok | Named files `Agents.md`, `Claude.md`, `CLAUDE.md`, `CLAUDE.local.md`, `AGENT.md`, `AGENTS.md` under `$GROK_HOME`, default `~/.grok`, then `~/.claude` and `~/.cursor`; rule dirs `$GROK_HOME/rules`, `~/.claude/rules`, `~/.cursor/rules`, then `[paths].extra_rule_dirs`, each sorted by name | Named files are deduplicated by file identity. Claude and Cursor sources honor their own compat switches in `~/.grok/config.toml`. |
+| Antigravity | `~/.gemini/AGENTS.md`, `~/.gemini/GEMINI.md`, `~/.gemini/config/AGENTS.md`, `~/.gemini/config/GEMINI.md`; rules in `~/.gemini/config/rules/*.md` and `~/.gemini/antigravity-cli/rules/*.md` | Rules with `trigger: always_on` always load; other triggers are conditional. |
+| Muse Code | `run.system_prompt` and `run.developer_prompt` in `~/.config/muse/settings.json`; `~/.claude/CLAUDE.md` and `$CODEX_HOME/AGENTS.md` | `context.foreign_personal_rules` can disable the foreign personal rules. |
+
+OpenCode `{file:<path>}` substitutions resolve relative to the config file, expand `~`, and show the referenced file as the source. `{env:<VAR>}` stays unresolved with a note that the environment supplies it at runtime. Remote instruction URLs load only when selected.
+
+### Base prompt
+
+| Harness | Source |
+| --- | --- |
+| Codex | `~/.codex/models_cache.json`, one part per model's `model_messages` templates, with the configured model first. Fallback: `https://raw.githubusercontent.com/openai/codex/rust-v<version>/codex-rs/models-manager/prompt.md` |
+| OpenCode | Prompt files listed through the GitHub contents API for `anomalyco/opencode` at `v<version>`, under `packages/opencode/src/session/prompt/` |
+| Others | Unavailable: "Closed source. Use Capture." |
+
+Fetched prompts are cached at `~/Library/Caches/SkillShelf/prompts/<harness>/<version>/<file>`. Cached files are not fetched again. The version and source appear with the prompt.
+
+### Capture adapters
+
+Only Claude Code, Codex and OpenCode are enabled. Each captured a request with a placeholder credential on this Mac. No adapter allows a Unix socket exception.
+
+| Harness | Redirect and command | Session history or unavailable reason |
+| --- | --- | --- |
+| Claude Code | `ANTHROPIC_BASE_URL`, placeholder `ANTHROPIC_API_KEY`; `claude -p --no-session-persistence <sentinel>` | Persistence disabled. After exit, cleanup removes only the project directory for this run's unique temporary cwd, including its canonical path spelling. |
+| Codex | Provider `skillshelf` points to `<url>/v1`, uses `responses`, placeholder `SKILLSHELF_API_KEY`, WebSockets off; `codex exec --ephemeral --skip-git-repo-check <sentinel>` | `--ephemeral` disables session files. No shared history paths are selected for cleanup. |
+| OpenCode | `OPENCODE_CONFIG_CONTENT` selects provider `skillshelf` with `options.baseURL` and a placeholder `apiKey`; `opencode run <sentinel>` | No no-persistence flag. `OPENCODE_DB=:memory:` keeps this session in memory and leaves shared SQLite history untouched. |
+| Grok | Disabled | "Requires real login" |
+| Muse Code | Disabled | "Placeholder key needs --api-key-stdin, not supported yet" |
+| Cursor | Disabled | "Prompt is assembled on Cursor's servers" |
+| Antigravity | Disabled | "No verified local redirect" |
+
+### Capture rules
+
+- One capture runs at a time, in a new empty temporary directory, with a unique `SKILLSHELF_CAPTURE_<UUID>` user message.
+- The listener binds only to `127.0.0.1` on a free port. `sandbox-exec` permits outbound traffic only to that port. It blocks other network access, other localhost services and Unix sockets. Hooks, MCP servers and plugins inherit the sandbox. If the sandbox cannot be verified, the harness does not run.
+- The login environment supplies PATH and home. Credential and proxy variables are stripped before the adapter adds its redirect and placeholder credential. The user's config remains in use, so hooks and stdio MCP servers can run and have local side effects. Remote MCP servers and other blocked connections cannot contribute their text; reported MCP failures become capture notes. Placeholder auth can produce different text from account auth, and provider-side additions are absent.
+- Requests support `Content-Length` and chunked framing. Limits are 64 KB of headers, 32 MB per body, 64 MB of bodies in total, 8 concurrent connections and 30 requests. Over-limit requests are dropped with a note. Headers are used only for framing and are never saved or logged. Compressed bodies are stored as base64 with an encoding note; WebSocket upgrades are refused. The listener returns a non-retryable `400` error in the adapter's format.
+- The first request with the sentinel and a non-empty tools list is the main request and stops capture. Otherwise capture stops on process exit or after 60 s. A sentinel request without tools is labeled "Main request: best guess"; without the sentinel, the main request is unknown. Other requests are helper calls.
+- Cleanup is awaited on success, failure and cancellation: terminate the process group, wait for exit, close the listener and connections, remove the temporary directory. Session controls depend on the harness version. Shared logs, caches and hook or MCP side effects may retain metadata; shared files are not edited or deleted to remove it.
+- Captures are JSON at `~/Library/Application Support/SkillShelf/captures/<harness>/<ISO8601 timestamp>.json`, with `0700` directories and `0600` files. They hold the harness, version, command without placeholder values, date, notes, request methods, paths and bodies, and up to the last 4 KB of stderr diagnostics. Anthropic and OpenAI bodies are split into system text, tools and messages; unknown formats show raw JSON.
+
 ## Delete
 
 - `builtIn`: disabled, reason shown.

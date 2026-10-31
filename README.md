@@ -2,6 +2,8 @@
 
 macOS app that lists the agent skills installed for Claude Code, Codex, Cursor, OpenCode, Grok and Antigravity, shows where each one lives, deletes them to the Trash, and pushes a skill to every harness with symlinks.
 
+It also shows each harness's system prompt: instruction files, the vendor base prompt where it is public, and a sandboxed capture of the request it sends.
+
 ## Install
 
 Download the zip from the [latest release](https://github.com/jdelaire/SkillShelf/releases/latest), unzip it and move `SkillShelf.app` to Applications. Releases are signed with Developer ID and notarized by Apple. From 0.1.2 on, SkillShelf updates itself with [Sparkle](https://sparkle-project.org): it checks once a day, and SkillShelf > Check for Updates… checks right away.
