@@ -52,6 +52,43 @@ import Testing
         #expect(toml.bool("paths.after") == true)
     }
 
+    @Test(arguments: [
+        "developer_instructions = '''\n[compat.claude]\nskills = false\n'''",
+        "x = {prompt = \"\"\"\n[compat.claude]\nskills = false\n\"\"\"}",
+        "x = [1, \"\"\"\n[compat.claude]\nskills = false\n\"\"\"]",
+        "x = [\"\"\"\n[compat.claude]\nskills = false\n\"\"\", 1]",
+        "x = [[1], [\"\"\"\n[compat.claude]\nskills = false\n\"\"\"]]",
+        "x = [1, # item\n[{nested = {prompt = '''\n[compat.claude]\nskills = false\n'''}}]]",
+        "developer_instructions = \"\"\"\\U0001F600\n[compat.claude]\nskills = false\n\"\"\"",
+        "developer_instructions = \"\"\"\\b\n[compat.claude]\nskills = false\n\"\"\"",
+        "developer_instructions = \"\"\"\\f\n[compat.claude]\nskills = false\n\"\"\"",
+        "developer_instructions = \"\"\"\\r\n[compat.claude]\nskills = false\n\"\"\"",
+        "developer_instructions = \"\"\"\\\n[compat.claude]\nskills = false\n\"\"\"",
+        "\"x#y\" = \"\"\"\n[compat.claude]\nskills = false\n\"\"\"",
+        "\"x=y\" = \"\"\"\n[compat.claude]\nskills = false\n\"\"\"",
+        "\"bad\\q\" = \"\"\"\n[compat.claude]\nskills = false\n\"\"\"",
+        "'a=\"\"\"' = \"ignored\"\nafter = true\ndeveloper_instructions = \"\"\"\n[compat.claude]\nskills = false\n\"\"\"",
+    ])
+    func tomlNeverPublishesAssignmentsInsideValues(_ input: String) {
+        let toml = TOMLKeys(input + "\nafter = true")
+        #expect(toml["compat.claude.skills"] == nil)
+        #expect(toml.bool("after") == true)
+    }
+
+    @Test func tomlDecodesLongUnicodeEscapesAndMultilineContinuations() {
+        let toml = TOMLKeys(#"""
+        emoji = "\U0001F600"
+        text = """
+        one\
+
+          two\
+            three\
+          """
+        """#)
+        #expect(toml.string("emoji") == "😀")
+        #expect(toml.string("text") == "onetwothree")
+    }
+
     @Test func tomlReadsStringsBoolsArraysAndMultiline() {
         let toml = TOMLKeys("""
         model = "gpt-6.1-sol"
@@ -85,10 +122,10 @@ import Testing
         #expect(toml.bool("paths.after") == true)
     }
 
-    @Test func tomlSkipsMalformedLinesKeepsRest() {
+    @Test func tomlUnterminatedArrayConsumesRest() {
         let toml = TOMLKeys("model = \"a\"\nbroken = [\"x\"\nok = true")
         #expect(toml.string("model") == "a")
-        #expect(toml.bool("ok") == true)
+        #expect(toml.bool("ok") == nil)
     }
 
     @Test func jsoncKeepsCommentMarkersInsideStrings() {
@@ -151,8 +188,8 @@ import Testing
         bad_array = ["a" "b"]
         bad_type = ["a", true]
         trailing = "a" garbage
-        broken = """unterminated
         good = "kept"
+        broken = """unterminated
         """#)
         for key in ["bad_bool", "bad_escape", "bad_unicode", "bad_string", "bad_array", "bad_type", "trailing", "broken"] {
             #expect(toml[key] == nil)
