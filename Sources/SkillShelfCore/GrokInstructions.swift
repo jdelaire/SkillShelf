@@ -2,9 +2,13 @@ import Darwin
 import Foundation
 
 extension InstructionReader {
-    static func grok(layout: Layout, environment: [String: String], files: InstructionFiles) -> [PromptPart] {
-        let home = environment["GROK_HOME"].flatMap { $0.isEmpty ? nil : resolve($0, relativeTo: layout.home, layout: layout) }
+    static func grokHome(layout: Layout, environment: [String: String]) -> String {
+        environment["GROK_HOME"].flatMap { $0.isEmpty ? nil : resolve($0, relativeTo: layout.home, layout: layout) }
             ?? layout.path(".grok")
+    }
+
+    static func grok(layout: Layout, environment: [String: String], files: InstructionFiles) -> [PromptPart] {
+        let home = grokHome(layout: layout, environment: environment)
         let config = TOMLKeys(files.text(home + "/config.toml") ?? "")
         let vendors = ["claude", "cursor"]
         var namedDirectories = [home]

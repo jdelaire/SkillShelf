@@ -6,7 +6,7 @@ struct PromptSidebarSection: View {
 
     var body: some View {
         Section("System prompts") {
-            ForEach(model.snapshot.harnesses) { harness in
+            ForEach(model.snapshot.promptHarnesses) { harness in
                 Label { Text(harness.displayName) } icon: { HarnessIcon(harness: harness) }
                     .badge(model.prompts.parts(for: harness).filter { $0.status == .present }.count)
                     .tag(SidebarItem.prompts(harness))

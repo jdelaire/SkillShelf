@@ -1,8 +1,47 @@
+import Darwin
 import Foundation
 import Testing
 @testable import SkillShelfCore
 
 @Suite struct SkillScannerTests {
+    @Test func snapshotIncludesCustomHomePromptsWithoutChangingSkillRoots() async {
+        await #expect(processExitsWith: .success) {
+            let f = try Fixture(installed: [.claude]); defer { f.remove() }
+            try f.write("custom/codex/AGENTS.md", "codex-fixture")
+            try f.write("custom/grok/AGENTS.md", "grok-fixture")
+            try f.write("custom/grok/config.toml", "[compat.claude]\nagents = false\nrules = false\n[compat.cursor]\nagents = false\nrules = false")
+            try f.skill("custom/codex/skills/custom-codex")
+            try f.skill("custom/grok/skills/custom-grok")
+            try f.skill(".claude/skills/existing")
+            try #require(!FileManager.default.fileExists(atPath: f.layout.path(".codex")))
+            try #require(!FileManager.default.fileExists(atPath: f.layout.path(".grok")))
+
+            for prefix in [f.home + "/", "~/", ""] {
+                try #require(setenv("CODEX_HOME", prefix + "custom/codex", 1) == 0)
+                try #require(setenv("GROK_HOME", prefix + "custom/grok", 1) == 0)
+                let snapshot = f.snapshot()
+                try #require(Set(snapshot.prompts.keys) == [.claude, .codex, .grok])
+                try #require(snapshot.promptHarnesses == [.claude, .codex, .grok])
+                try #require(snapshot.prompts[.codex]?.contains {
+                    $0.source == .file(path: f.layout.path("custom/codex/AGENTS.md"), key: nil) && $0.status == .present
+                } == true)
+                try #require(snapshot.prompts[.grok]?.contains {
+                    $0.source == .file(path: f.layout.path("custom/grok/AGENTS.md"), key: nil) && $0.status == .present
+                } == true)
+                try #require(snapshot.harnesses == [.claude])
+                try #require(snapshot.entries.map(\.folderName) == ["existing"])
+            }
+
+            try f.skill(".codex/skills/default-codex")
+            try f.skill(".grok/skills/default-grok")
+            let snapshot = f.snapshot()
+            try #require(snapshot.harnesses == [.claude, .codex, .grok])
+            try #require(Set(snapshot.entries.map(\.folderName)) == ["existing", "default-codex", "default-grok"])
+            try #require(snapshot.harnessRoots[.codex]?.first?.root.path == f.layout.codexSkills)
+            try #require(snapshot.harnessRoots[.grok]?.first?.root.path == f.layout.grokSkills)
+        }
+    }
+
     @Test func snapshotCarriesInstructionParts() throws {
         let fixture = try Fixture(installed: [.codex])
         defer { fixture.remove() }

@@ -152,6 +152,10 @@ public struct Snapshot: Sendable {
         HarnessID.allCases.filter { harnessRoots[$0] != nil }
     }
 
+    public var promptHarnesses: [HarnessID] {
+        HarnessID.allCases.filter { prompts[$0] != nil }
+    }
+
     public func rows(for harness: HarnessID) -> [HarnessRow] {
         let roots = harnessRoots[harness] ?? []
         var rows: [HarnessRow] = []

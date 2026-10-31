@@ -51,6 +51,17 @@ public struct Layout: Sendable {
         }
     }
 
+    func isInstalledForPrompts(_ harness: HarnessID, environment: [String: String]) -> Bool {
+        let home: String
+        switch harness {
+        case .codex: home = InstructionReader.codexHome(layout: self, environment: environment)
+        case .grok: home = InstructionReader.grokHome(layout: self, environment: environment)
+        default: return isInstalled(harness)
+        }
+        var isDirectory: ObjCBool = false
+        return FileManager.default.fileExists(atPath: home, isDirectory: &isDirectory) && isDirectory.boolValue
+    }
+
     public func pushRoot(for harness: HarnessID) -> String {
         switch harness {
         case .claude: claudeSkills
