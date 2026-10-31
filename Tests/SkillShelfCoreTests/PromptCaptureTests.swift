@@ -253,6 +253,61 @@ struct PromptCaptureTests {
         #expect(try FileManager.default.contentsOfDirectory(atPath: dir.path + "/tmp").isEmpty)
     }
 
+    @Test(arguments: [".claude", ".claude/projects"])
+    func claudeSessionCleanupRefusesSymlinkAncestors(ancestor: String) async throws {
+        let dir = try TempDir()
+        defer { dir.remove() }
+        let script = try script(dir, """
+        for sentinel in "$@"; do :; done
+        project=$(/bin/pwd -P | /usr/bin/sed 's/[^a-zA-Z0-9]/-/g')
+        /bin/mkdir -p "$HOME/.claude/projects/$project" "$HOME/unrelated/projects/$project"
+        echo capture > "$HOME/.claude/projects/$project/session.jsonl"
+        echo history > "$HOME/unrelated/projects/$project/session.jsonl"
+        /bin/mv "$HOME/\(ancestor)" "$HOME/parked"
+        /bin/ln -s "$HOME/unrelated\(ancestor == ".claude" ? "" : "/projects")" "$HOME/\(ancestor)"
+        /usr/bin/curl --noproxy '*' -s -X POST "$ANTHROPIC_BASE_URL/v1/messages" -d "{\\"tools\\":[{}],\\"input\\":\\"$sentinel\\"}"
+        """)
+        let launcher = RecordingLauncher()
+        let capture = capture(dir, script: script, launcher: launcher, environment: ["HOME": dir.path, "PATH": "/usr/bin:/bin"])
+        let adapter = try #require(CaptureAdapters.adapter(for: .claude))
+        let record = try CaptureRecord.load(try await capture.run(adapter, version: nil))
+        let projects = try FileManager.default.contentsOfDirectory(atPath: dir.path + "/unrelated/projects")
+        #expect(projects.count == 1)
+        if let project = projects.first {
+            #expect(try String(contentsOfFile: dir.path + "/unrelated/projects/" + project + "/session.jsonl", encoding: .utf8) == "history\n")
+        }
+        #expect(record.notes.contains { $0.hasPrefix("Session artifact cleanup skipped:") })
+        try expectCleanup(dir, launcher: launcher)
+    }
+
+    @Test func claudeSessionCleanupUnlinksNestedSymlinks() async throws {
+        let dir = try TempDir()
+        defer { dir.remove() }
+        let target = dir.path + "/unrelated"
+        try FileManager.default.createDirectory(atPath: target, withIntermediateDirectories: true)
+        try "history".write(toFile: target + "/session.jsonl", atomically: true, encoding: .utf8)
+        let launcher = CleanupFixtureLauncher { cwd in
+            for path in Set([cwd, URL(fileURLWithPath: cwd).resolvingSymlinksInPath().path]) {
+                let name = path.replacingOccurrences(of: "[^a-zA-Z0-9]", with: "-", options: .regularExpression)
+                let nested = dir.path + "/.claude/projects/" + name + "/nested"
+                try FileManager.default.createDirectory(atPath: nested, withIntermediateDirectories: true)
+                try "capture".write(toFile: nested + "/session.jsonl", atomically: true, encoding: .utf8)
+                for (name, destination) in [("directory", target), ("file", target + "/session.jsonl"), ("dangling", target + "/missing")] {
+                    try FileManager.default.createSymbolicLink(atPath: nested + "/" + name, withDestinationPath: destination)
+                }
+            }
+        }
+        let capture = PromptCapture(
+            launcher: launcher, resolveTool: { _ in "/fake/claude" }, loginEnvironment: { ["HOME": dir.path] },
+            capturesRoot: dir.path + "/captures", tempRoot: dir.path + "/tmp"
+        )
+        let adapter = try #require(CaptureAdapters.adapter(for: .claude))
+        await #expect(throws: CaptureError.noRequest(version: nil)) { try await capture.run(adapter, version: nil) }
+        #expect(try FileManager.default.contentsOfDirectory(atPath: dir.path + "/.claude/projects").isEmpty)
+        #expect(try String(contentsOfFile: target + "/session.jsonl", encoding: .utf8) == "history")
+        #expect(try FileManager.default.contentsOfDirectory(atPath: dir.path + "/tmp").isEmpty)
+    }
+
     @Test func claudeSessionCleanupRejectsUnattributedHookPaths() async throws {
         let dir = try TempDir()
         defer { dir.remove() }

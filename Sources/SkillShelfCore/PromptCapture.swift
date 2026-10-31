@@ -63,7 +63,7 @@ public actor PromptCapture {
                 let handle = try launcher.launch(argv: argv, environment: environment, cwd: directory)
                 process = handle
                 let requests = await collect(listener: listener, process: handle, sentinel: sentinel, stop: stop)
-                try await cleanUp(
+                let cleanupNotes = try await cleanUp(
                     process: handle, listener: listener, directory: directory, workingDirectory: workingDirectory,
                     adapter: adapter, home: home, sentinel: sentinel
                 )
@@ -72,6 +72,7 @@ public actor PromptCapture {
                 guard !requests.isEmpty else { throw CaptureError.noRequest(version: version) }
                 let diagnostics = await handle.diagnostics()
                 let notes = ["sentinel: \(sentinel)", "Placeholder auth: account-specific text may differ"]
+                    + cleanupNotes
                     + listener.notes()
                     + DiagnosticNotes.mcpFailures(diagnostics.stdout)
                     + DiagnosticNotes.mcpFailures(diagnostics.stderr)
@@ -86,7 +87,7 @@ public actor PromptCapture {
                 return try record.save(to: URL(fileURLWithPath: capturesRoot, isDirectory: true)
                     .appendingPathComponent(adapter.harness.rawValue).path)
             } catch {
-                try await cleanUp(
+                _ = try await cleanUp(
                     process: process, listener: listener, directory: directory, workingDirectory: workingDirectory,
                     adapter: adapter, home: home, sentinel: sentinel
                 )
@@ -139,19 +140,31 @@ public actor PromptCapture {
     private func cleanUp(
         process: (any CaptureProcessHandle)?, listener: CaptureListener, directory: String,
         workingDirectory: CaptureWorkingDirectory?, adapter: CaptureAdapter, home: String, sentinel: String
-    ) async throws {
+    ) async throws -> [String] {
         if let process {
             await process.terminate()
             _ = await process.exitStatus()
         }
         await listener.stop()
-        if process != nil, let workingDirectory {
+        let sessionCleanup = Result<[String], Error> {
+            guard process != nil, let workingDirectory else { return [] }
             let allowed = adapter.harness == .claude ? Set(workingDirectory.claudeProjectPaths(home: home)) : []
-            for path in adapter.cleanupPaths(home, workingDirectory, sentinel) where allowed.contains(path) {
-                try removeWithoutFollowingSymlink(path)
+            let paths = adapter.cleanupPaths(home, workingDirectory, sentinel).filter { allowed.contains($0) }
+            guard !paths.isEmpty else { return [] }
+            let projects: CaptureArtifactDirectory?
+            do {
+                projects = try CaptureArtifactDirectory(home: home)
+            } catch {
+                return ["Session artifact cleanup skipped: .claude/projects could not be opened safely. \(error.localizedDescription)"]
             }
+            guard let projects else { return [] }
+            for path in paths {
+                try projects.removeProject(named: URL(fileURLWithPath: path).lastPathComponent)
+            }
+            return []
         }
         try removeWithoutFollowingSymlink(directory)
+        return try sessionCleanup.get()
     }
 
     private func removeWithoutFollowingSymlink(_ path: String) throws {
