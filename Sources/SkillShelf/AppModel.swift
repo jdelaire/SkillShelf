@@ -5,6 +5,7 @@ import SkillShelfCore
 enum SidebarItem: Hashable {
     case all
     case harness(HarnessID)
+    case prompts(HarnessID)
 }
 
 struct DeleteRequest: Identifiable {
@@ -23,8 +24,9 @@ struct PushRequest: Identifiable {
 @Observable
 final class AppModel {
     let layout: Layout
-    private let runner: LoginShellRunner
+    private let runner: any CommandRunning
     private let mutator: Mutator
+    let prompts: PromptState
 
     var snapshot = Snapshot.empty
     var sidebar: SidebarItem? = .all {
@@ -39,17 +41,21 @@ final class AppModel {
     var message: String?
     var errorMessage: String?
     private var generation = 0
+    private var rescanRequested = false
 
-    init(layout: Layout = Layout()) {
+    init(layout: Layout = Layout(), runner: (any CommandRunning)? = nil, prompts: PromptState? = nil) {
         self.layout = layout
-        runner = LoginShellRunner(home: layout.home)
+        let runner = runner ?? LoginShellRunner(home: layout.home)
+        self.runner = runner
         mutator = Mutator(layout: layout, runner: runner)
+        self.prompts = prompts ?? PromptState(layout: layout, runner: runner)
     }
 
     var rows: [HarnessRow] {
         let base: [HarnessRow]
         switch sidebar {
         case .harness(let harness): base = snapshot.rows(for: harness)
+        case .prompts: base = []
         case .all, nil: base = snapshot.allRows()
         }
         let query = search.trimmingCharacters(in: .whitespaces)
@@ -71,24 +77,34 @@ final class AppModel {
     }
 
     func refresh() async {
-        generation += 1
-        let current = generation
+        guard !isScanning else {
+            rescanRequested = true
+            return
+        }
         isScanning = true
-        let result = await SkillScanner.scan(layout: layout, runner: runner, generation: current)
-        guard current == generation else { return }
-        snapshot = result
-        isScanning = false
-        if let selection, snapshot.entry(id: selection) == nil { self.selection = nil }
-        if let request = deleteRequest {
-            deleteRequest = snapshot.entry(id: request.entry.id).map {
-                DeleteRequest(entry: $0, result: DeletePlanner.plan(for: $0, in: snapshot, layout: layout))
+        defer { isScanning = false }
+        repeat {
+            rescanRequested = false
+            generation += 1
+            let current = generation
+            let result = await SkillScanner.scan(layout: layout, runner: runner, generation: current)
+            guard current == generation else { continue }
+            snapshot = result
+            prompts.instructions = result.prompts
+            prompts.contentGeneration += 1
+            if let selection = prompts.selection, prompts.part(id: selection) == nil { prompts.selection = nil }
+            if let selection, snapshot.entry(id: selection) == nil { self.selection = nil }
+            if let request = deleteRequest {
+                deleteRequest = snapshot.entry(id: request.entry.id).map {
+                    DeleteRequest(entry: $0, result: DeletePlanner.plan(for: $0, in: snapshot, layout: layout))
+                }
             }
-        }
-        if let request = pushRequest {
-            pushRequest = snapshot.entry(id: request.entry.id).map {
-                PushRequest(entry: $0, result: PushPlanner.plan(for: $0, in: snapshot, layout: layout))
+            if let request = pushRequest {
+                pushRequest = snapshot.entry(id: request.entry.id).map {
+                    PushRequest(entry: $0, result: PushPlanner.plan(for: $0, in: snapshot, layout: layout))
+                }
             }
-        }
+        } while rescanRequested
     }
 
     func requestDelete(_ entry: SkillEntry) {

@@ -3,6 +3,99 @@ import Testing
 @testable import SkillShelfCore
 
 struct CaptureParserTests {
+    @Test func captureIndexListsNewestFirst() async throws {
+        let f = try Fixture(); defer { f.remove() }
+        let date = Date(timeIntervalSince1970: 1_793_318_400)
+        let body = #"{"input":"SKILLSHELF_CAPTURE_X","tools":[{"name":"shell"}]}"#
+        let older = try CaptureRecord(
+            harness: "claude", version: "2.1.312", adapter: "claude", command: [], date: date,
+            notes: ["sentinel: SKILLSHELF_CAPTURE_X"],
+            requests: [CapturedRequest(method: "POST", path: "/v1/messages", body: body, bodyEncoding: nil)],
+            diagnostics: nil
+        ).save(to: f.layout.path("captures/claude"))
+        let newer = try CaptureRecord(
+            harness: "claude", version: "2.1.313", adapter: "claude", command: [], date: date.addingTimeInterval(1),
+            notes: ["sentinel: SKILLSHELF_CAPTURE_X"],
+            requests: [CapturedRequest(method: "POST", path: "/v1/messages", body: "SKILLSHELF_CAPTURE_X", bodyEncoding: nil)],
+            diagnostics: nil
+        ).save(to: f.layout.path("captures/claude"))
+
+        let parts = await CaptureIndex.list(harness: .claude, capturesRoot: f.layout.path("captures"))
+
+        #expect(parts.map(\.source) == [.capture(path: newer), .capture(path: older)])
+        #expect(parts.map(\.version) == ["2.1.313", "2.1.312"])
+        #expect(parts[0].title == "2026-10-30T00:00:01.000Z · Main request: best guess")
+        #expect(parts[1].title == "2026-10-30T00:00:00.000Z · Main request: found")
+        #expect(parts.allSatisfy { $0.harness == .claude && $0.layer == .capture && $0.status == .present })
+    }
+
+    @Test func captureIndexReadsSavedHeaderWithoutParsingBodies() async throws {
+        let f = try Fixture(); defer { f.remove() }
+        let body = #"{"input":"SKILLSHELF_CAPTURE_X","tools":[{"name":"shell"}]}"#
+        let path = try CaptureRecord(
+            harness: "codex", version: "0.164.0", adapter: "codex", command: [], date: Date(timeIntervalSince1970: 1_793_318_400),
+            notes: ["sentinel: SKILLSHELF_CAPTURE_X"],
+            requests: [CapturedRequest(method: "POST", path: "/v1/responses", body: body, bodyEncoding: nil)],
+            diagnostics: nil
+        ).save(to: f.layout.path("captures/codex"))
+        let saved = try Data(contentsOf: URL(fileURLWithPath: path))
+        var large = Data(saved.prefix { $0 != 10 })
+        large.append(10)
+        large.append(Data(String(repeating: "invalid body", count: 30_000).utf8))
+        try large.write(to: URL(fileURLWithPath: path))
+
+        let parts = await CaptureIndex.list(harness: .codex, capturesRoot: f.layout.path("captures"))
+
+        #expect(parts.count == 1)
+        #expect(parts.first?.title.hasSuffix("Main request: found") == true)
+        #expect(parts.first?.version == "0.164.0")
+    }
+
+    @Test func captureIndexLegacyRecordHasUnknownMainRequest() async throws {
+        let f = try Fixture(); defer { f.remove() }
+        let record = CaptureRecord(
+            harness: "claude", version: nil, adapter: "claude", command: [], date: .now,
+            notes: ["sentinel: SKILLSHELF_CAPTURE_X"],
+            requests: [CapturedRequest(method: "POST", path: "/v1/messages", body: "SKILLSHELF_CAPTURE_X", bodyEncoding: nil)],
+            diagnostics: nil
+        )
+        try f.write("captures/claude/2026-10-30T00:00:00.000Z.json", String(decoding: JSONEncoder().encode(record), as: UTF8.self))
+
+        let parts = await CaptureIndex.list(harness: .claude, capturesRoot: f.layout.path("captures"))
+
+        #expect(parts.count == 1)
+        #expect(parts.first?.title == "2026-10-30T00:00:00.000Z · Main request: unknown")
+    }
+
+    @Test func captureIndexNeverReadsHeaderBeyond64KB() async throws {
+        let f = try Fixture(); defer { f.remove() }
+        let path = try CaptureRecord(
+            harness: "claude", version: "2.1.312", adapter: "claude", command: [], date: Date(timeIntervalSince1970: 1_793_318_400),
+            notes: ["sentinel: SKILLSHELF_CAPTURE_X"],
+            requests: [CapturedRequest(method: "POST", path: "/v1/messages", body: "SKILLSHELF_CAPTURE_X", bodyEncoding: nil)],
+            diagnostics: nil
+        ).save(to: f.layout.path("captures/claude"))
+        var padded = Data(repeating: 32, count: 64 * 1024)
+        padded.append(try Data(contentsOf: URL(fileURLWithPath: path)))
+        try padded.write(to: URL(fileURLWithPath: path))
+
+        let parts = await CaptureIndex.list(harness: .claude, capturesRoot: f.layout.path("captures"))
+
+        #expect(parts.count == 1)
+        #expect(parts.first?.title.hasSuffix("Main request: unknown") == true)
+        #expect(parts.first?.version == nil)
+    }
+
+    @Test func captureIndexIgnoresOtherFilesAndMissingDirectories() async throws {
+        let f = try Fixture(); defer { f.remove() }
+        try f.write("captures/claude/readme.txt", "ignored")
+        try f.write("captures/claude/not-a-date.json", "{}")
+        try f.write("captures/claude/2026-10-30T00:00:00.000Z.json/child", "directory")
+
+        #expect(await CaptureIndex.list(harness: .claude, capturesRoot: f.layout.path("captures")).isEmpty)
+        #expect(await CaptureIndex.list(harness: .codex, capturesRoot: f.layout.path("captures")).isEmpty)
+    }
+
     @Test func anthropicBodySplitsSystemToolsMessages() throws {
         let body = #"{"system":[{"type":"text","text":"You are X"}],"tools":[{"name":"Bash","description":"Run.\nMore","input_schema":{"type":"object"}}],"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}"#
         let sections = CaptureParser.sections(body)

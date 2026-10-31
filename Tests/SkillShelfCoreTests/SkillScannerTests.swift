@@ -3,6 +3,34 @@ import Testing
 @testable import SkillShelfCore
 
 @Suite struct SkillScannerTests {
+    @Test func snapshotCarriesInstructionParts() throws {
+        let fixture = try Fixture(installed: [.codex])
+        defer { fixture.remove() }
+        try fixture.write(".codex/AGENTS.md", "x")
+
+        let snapshot = fixture.snapshot()
+
+        #expect(snapshot.prompts[.codex]?.contains {
+            $0.title == "~/.codex/AGENTS.md" && $0.status == .present
+        } == true)
+        #expect(Set(snapshot.prompts.keys) == Set(snapshot.harnesses))
+    }
+
+    @Test func snapshotRebuildsInstructionsAfterFileRemoval() throws {
+        let fixture = try Fixture(installed: [.claude])
+        defer { fixture.remove() }
+        try fixture.write(".claude/CLAUDE.md", "@extra.md")
+        try fixture.write(".claude/extra.md", "Extra")
+        let first = fixture.snapshot()
+        try FileManager.default.removeItem(atPath: fixture.layout.path(".claude/extra.md"))
+
+        let second = fixture.snapshot()
+
+        #expect(first.prompts[.claude]?.first { $0.title == "~/.claude/extra.md" }?.status == .present)
+        #expect(second.prompts[.claude]?.first { $0.title == "~/.claude/extra.md" }?.status == .missing)
+        #expect(Snapshot.empty.prompts.isEmpty)
+    }
+
     @Test func classifiesFoldersLinksAndBrokenLinks() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }

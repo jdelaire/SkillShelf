@@ -128,19 +128,22 @@ public struct Snapshot: Sendable {
     public let harnessRoots: [HarnessID: [HarnessRoot]]
     public let notes: [String]
     public let visible: [HarnessID: Set<String>]
+    public let prompts: [HarnessID: [PromptPart]]
 
     public init(
         generation: Int,
         entries: [SkillEntry],
         harnessRoots: [HarnessID: [HarnessRoot]],
         notes: [String],
-        visible: [HarnessID: Set<String>] = [:]
+        visible: [HarnessID: Set<String>] = [:],
+        prompts: [HarnessID: [PromptPart]] = [:]
     ) {
         self.generation = generation
         self.entries = entries
         self.harnessRoots = harnessRoots
         self.notes = notes
         self.visible = visible
+        self.prompts = prompts
     }
 
     public static let empty = Snapshot(generation: 0, entries: [], harnessRoots: [:], notes: [])

@@ -30,8 +30,11 @@ public enum BasePromptReader {
         layout: Layout,
         runner: any CommandRunning,
         fetcher: any PromptFetching,
-        cacheRoot: String = NSHomeDirectory() + "/Library/Caches/SkillShelf/prompts",
-        environment: [String: String] = ProcessInfo.processInfo.environment
+        cacheRoot: String = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("SkillShelf/prompts", isDirectory: true).path,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        reusing previous: BasePrompts? = nil,
+        force: Bool = false
     ) async -> BasePrompts {
         let installedVersion: String
         do {
@@ -46,6 +49,8 @@ public enum BasePromptReader {
         } catch {
             return unavailable(harness: harness, reason: "Could not read version: " + firstLine(error.localizedDescription))
         }
+
+        if !force, let previous, previous.version == installedVersion { return previous }
 
         switch harness {
         case .codex:

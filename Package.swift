@@ -24,6 +24,6 @@ let package = Package(
             ],
             linkerSettings: [.unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"])]
         ),
-        .testTarget(name: "SkillShelfCoreTests", dependencies: ["SkillShelfCore", "SandboxProbe"]),
+        .testTarget(name: "SkillShelfCoreTests", dependencies: ["SkillShelfCore", "SkillShelf", "SandboxProbe"]),
     ]
 )

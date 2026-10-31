@@ -14,7 +14,8 @@ public actor PromptCapture {
         launcher: any CaptureProcessLaunching = SpawnLauncher(),
         resolveTool: @escaping @Sendable (String) async -> String?,
         loginEnvironment: @escaping @Sendable () async -> [String: String],
-        capturesRoot: String = NSHomeDirectory() + "/Library/Application Support/SkillShelf/captures",
+        capturesRoot: String = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("SkillShelf/captures", isDirectory: true).path,
         tempRoot: String = NSTemporaryDirectory(), timeout: Duration = .seconds(60)
     ) {
         self.launcher = launcher

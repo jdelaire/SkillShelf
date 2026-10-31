@@ -125,8 +125,14 @@ public enum SkillScanner {
         }
         let guarded = roots.filter { $0.kind != .user }
         let entries = roots.flatMap { scanRoot($0, guarded: guarded, layout: layout) }
+        let files = InstructionFiles()
+        var prompts: [HarnessID: [PromptPart]] = [:]
+        for harness in HarnessID.allCases where harnessRoots[harness] != nil {
+            prompts[harness] = InstructionReader.parts(layout: layout, harness: harness, files: files)
+        }
         return Snapshot(
-            generation: generation, entries: entries, harnessRoots: harnessRoots, notes: inputs.notes, visible: inputs.visible
+            generation: generation, entries: entries, harnessRoots: harnessRoots, notes: inputs.notes,
+            visible: inputs.visible, prompts: prompts
         )
     }
 
