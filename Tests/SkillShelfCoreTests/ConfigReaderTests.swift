@@ -22,6 +22,36 @@ import Testing
         #expect(toml.strings("paths.extra_rule_dirs") == ["~/rules"])
     }
 
+    @Test func tomlConsumesMultilineStringsInUnknownScopes() {
+        let toml = TOMLKeys(#"""
+        [profiles."x"]
+        developer_instructions = """
+        [compat.claude]
+        skills = false
+        """
+        [paths]
+        extra_rule_dirs = ["~/rules"]
+        """#)
+        #expect(toml["compat.claude.skills"] == nil)
+        #expect(toml.sections == ["paths"])
+        #expect(toml.strings("paths.extra_rule_dirs") == ["~/rules"])
+    }
+
+    @Test func tomlConsumesMultilineStringsForInvalidKeys() {
+        let toml = TOMLKeys(#"""
+        [paths]
+        "a.b" = """
+        [compat.claude]
+        skills = false
+        """
+        after = true
+        """#)
+        #expect(toml["compat.claude.skills"] == nil)
+        #expect(toml["paths.a.b"] == nil)
+        #expect(toml.sections == ["paths"])
+        #expect(toml.bool("paths.after") == true)
+    }
+
     @Test func tomlReadsStringsBoolsArraysAndMultiline() {
         let toml = TOMLKeys("""
         model = "gpt-6.1-sol"

@@ -60,10 +60,15 @@ private struct TOMLLexer {
                     section = nil
                     offset = start
                 }
-            } else if let section, let key = readKey(), let value = readValue(), atLineEnd() {
-                values[section.isEmpty ? key : section + "." + key] = value
             } else {
-                offset = start
+                let key = readKey()
+                if let value = readValue(), atLineEnd() {
+                    if let section, let key {
+                        values[section.isEmpty ? key : section + "." + key] = value
+                    }
+                } else {
+                    offset = start
+                }
             }
             skipLine()
         }
