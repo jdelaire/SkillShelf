@@ -44,9 +44,17 @@ public enum CaptureParser {
         }
 
         var result = CaptureSections()
-        if object["messages"] is [Any] || object["system"] is String || object["system"] is [Any] {
+        if object["system"] is String || object["system"] is [Any] {
             result.system = textBlocks(object["system"])
             result.messages = messages(object["messages"])
+        } else if object["messages"] is [Any] {
+            for message in messages(object["messages"]) {
+                if message.role == "system" || message.role == "developer" {
+                    result.system.append(message.text)
+                } else {
+                    result.messages.append(message)
+                }
+            }
         } else if object["input"] is [Any] || object["input"] is String || object["instructions"] is String {
             result.system = textBlocks(object["instructions"])
             if let input = object["input"] as? String {
@@ -61,9 +69,10 @@ public enum CaptureParser {
         if let tools = tools(in: object) {
             result.toolsJSON = prettyJSON(tools)
             result.tools = tools.compactMap { item in
-                guard let tool = item as? [String: Any],
-                      let name = tool["name"] as? String ?? tool["type"] as? String else { return nil }
-                let description = tool["description"] as? String ?? ""
+                guard let tool = item as? [String: Any] else { return nil }
+                let metadata = tool["type"] as? String == "function" ? tool["function"] as? [String: Any] ?? tool : tool
+                guard let name = metadata["name"] as? String ?? tool["type"] as? String else { return nil }
+                let description = metadata["description"] as? String ?? ""
                 return (name: name, summary: String(description.prefix { !$0.isNewline }))
             }
         }

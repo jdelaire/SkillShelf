@@ -136,6 +136,33 @@ struct CaptureParserTests {
         #expect(sections.raw == nil)
     }
 
+    @Test func chatCompletionsBodySplitsSystemRolesAndNestedTools() throws {
+        let body = #"{"messages":[{"role":"system","content":"fixture-system"},{"role":"developer","content":[{"type":"text","text":"fixture-dev-one"},{"type":"text","text":"fixture-dev-two"}]},{"role":"system","content":[{"type":"text","text":"fixture-system-two"}]},{"role":"user","content":"SKILLSHELF_CAPTURE_X"},{"role":"assistant","content":[{"type":"text","text":"fixture-answer"}]},{"role":"tool","tool_call_id":"fixture-call","content":"fixture-result"}],"tools":[{"type":"function","function":{"name":"fixtureTool","description":"fixture-summary\nfixture-details","parameters":{"type":"object","properties":{}}}},{"type":"function","function":{"name":"otherTool","parameters":{"type":"object"}}}]}"#
+        let sections = CaptureParser.sections(body)
+        #expect(sections.system == ["fixture-system", "fixture-dev-one\nfixture-dev-two", "fixture-system-two"])
+        #expect(sections.messages.map(\.role) == ["user", "assistant", "tool"])
+        #expect(sections.messages.map(\.text) == ["SKILLSHELF_CAPTURE_X", "fixture-answer", "fixture-result"])
+        #expect(sections.tools.map(\.name) == ["fixtureTool", "otherTool"])
+        #expect(sections.tools.map(\.summary) == ["fixture-summary", ""])
+        #expect(sections.raw == nil)
+        let json = try #require(sections.toolsJSON)
+        let tools = try #require(JSONSerialization.jsonObject(with: Data(json.utf8)) as? [[String: Any]])
+        let function = try #require(tools.first?["function"] as? [String: Any])
+        #expect(function["description"] as? String == "fixture-summary\nfixture-details")
+        #expect((function["parameters"] as? [String: Any])?["type"] as? String == "object")
+
+        let withoutTools = #"{"messages":[{"role":"user","content":"SKILLSHELF_CAPTURE_X"}],"tools":[]}"#
+        let helper = #"{"messages":[{"role":"user","content":"fixture-helper"}],"tools":[{"type":"function","function":{"name":"helperTool"}}]}"#
+        let requests = [helper, withoutTools, body].map {
+            CapturedRequest(method: "POST", path: "/v1/chat/completions", body: $0, bodyEncoding: nil)
+        }
+        #expect(CaptureParser.hasTools(body))
+        #expect(!CaptureParser.hasTools(withoutTools))
+        #expect(CaptureParser.mainRequest(requests, sentinel: "SKILLSHELF_CAPTURE_X") == .found(2))
+        #expect(CaptureParser.mainRequest(Array(requests.prefix(2)), sentinel: "SKILLSHELF_CAPTURE_X") == .bestGuess(1))
+        #expect(CaptureParser.mainRequest([requests[0]], sentinel: "SKILLSHELF_CAPTURE_X") == .unknown)
+    }
+
     @Test func responsesStringInputIsUserMessage() {
         let sections = CaptureParser.sections(#"{"input":"hello"}"#)
         #expect(sections.system.isEmpty)

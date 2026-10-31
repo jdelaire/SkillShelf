@@ -207,6 +207,25 @@ struct PromptContentTests {
         #expect(!text.contains("## Harness output"))
     }
 
+    @Test func captureRendersChatCompletionsSystemAndNestedToolMetadata() async throws {
+        let f = try Fixture(installed: []); defer { f.remove() }
+        let record = CaptureRecord(
+            harness: "opencode", version: "1.19.5", adapter: "opencode", command: [], date: .now,
+            notes: ["sentinel: SKILLSHELF_CAPTURE_X"],
+            requests: [
+                CapturedRequest(method: "POST", path: "/title", body: #"{"messages":[{"role":"user","content":"SKILLSHELF_CAPTURE_X"}]}"#, bodyEncoding: nil),
+                CapturedRequest(method: "POST", path: "/v1/chat/completions", body: #"{"messages":[{"role":"system","content":[{"type":"text","text":"fixture-system"}]},{"role":"developer","content":"fixture-developer"},{"role":"user","content":"SKILLSHELF_CAPTURE_X"}],"tools":[{"type":"function","function":{"name":"fixtureTool","description":"fixture-summary\nfixture-details","parameters":{"type":"object"}}}]}"#, bodyEncoding: nil),
+            ], diagnostics: nil
+        )
+        let text = try await captureText(record, fixture: f)
+        #expect(text.contains("## System\n\n```text\nfixture-system\n```\n\n```text\nfixture-developer\n```"))
+        let rendered = try AttributedString(markdown: text)
+        #expect(String(rendered.characters).contains("fixtureTool: fixture-summary"))
+        #expect(try markdownHeadings(text) == ["## System", "## Tools (1)", "## Messages", "### user", "## Helper calls"])
+        #expect(text.contains("## Helper calls\n\n```text\nPOST /title\n```"))
+        #expect(!text.contains("Main request: best guess"))
+    }
+
     @Test func captureBestGuessIsLabeled() async throws {
         let f = try Fixture(); defer { f.remove() }
         let record = CaptureRecord(

@@ -148,6 +148,7 @@ Main request selection: the first request containing the sentinel and a non-empt
 `CaptureParser` turns a body into sections:
 - Anthropic `messages`: `system` (string or blocks), `tools`, `messages`.
 - OpenAI `responses`: `instructions`, `input` items by role, `tools`.
+- OpenAI Chat Completions: `messages` with role `system` or `developer` go to System in request order; other roles go to Messages. Function tool names and descriptions come from `tools[].function`, with full tool JSON preserved.
 - Anything else: pretty-printed raw JSON.
 
 ## App (`SkillShelf`)
@@ -189,7 +190,7 @@ Swift Testing with temp-home fixtures.
 - `InstructionReader`: per-harness order; missing parts; Claude imports with depth limit and a cycle; Claude conditional rules; Grok multiple named files with a case-insensitive duplicate, compat switches and a custom `$GROK_HOME`; OpenCode config merge order, recursive agent discovery, active agent with and without `default_agent`, `{file:}` and `{env:}` substitutions; Muse settings keys; the duplicate note for the OpenCode symlink case.
 - `TOMLKeys` and `JSONC`: multi-line strings, escapes, string arrays, comment markers and URLs inside strings, trailing commas.
 - `BasePromptReader`: `models_cache.json` parsing and configured-model ordering; GitHub URLs from a version; a cache hit makes no fetch call.
-- `CaptureParser`: both formats and the fallback; main request selection with and without tools and sentinel.
+- `CaptureParser`: Anthropic, OpenAI Responses, Chat Completions and the fallback; main request selection with and without tools and sentinel.
 - `PromptCapture` lifecycle with a real listener and a fake client script (`/bin/sh` running `curl` against the listener, then sleeping): request recorded; process group terminated once the sentinel request arrives; temp directory removed; saved file has no header data and `0600` permissions; cancellation cleans up; a second capture while busy returns `.busy`; limits close oversized requests.
 - Sandbox: inside the profile, a connection to the listener succeeds; a connection to a second local listener on another port, a non-loopback address and a Unix socket each fail with `EPERM`. Covered for `curl`, a child of a child process, and a URLSession client.
 
