@@ -4,14 +4,32 @@ import Foundation
 final class CaptureArtifactDirectory {
     private let descriptor: Int32
 
+    static func canonicalHome(_ home: String) throws -> String {
+        guard home.hasPrefix("/"), !home.utf8.contains(0) else { throw POSIXError(.EINVAL) }
+        guard let resolved = realpath(home, nil) else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        defer { free(resolved) }
+        guard let path = String(validatingCString: resolved) else { throw POSIXError(.EINVAL) }
+        return path
+    }
+
     init?(home: String) throws {
         guard home.hasPrefix("/"), !home.utf8.contains(0) else { throw POSIXError(.EINVAL) }
-        guard let home = try Self.openDirectory(home, relativeTo: AT_FDCWD) else { return nil }
-        defer { close(home) }
-        guard let claude = try Self.openDirectory(".claude", relativeTo: home) else { return nil }
-        defer { close(claude) }
-        guard let projects = try Self.openDirectory("projects", relativeTo: claude) else { return nil }
-        descriptor = projects
+        let components = home == "/" ? [] : home.dropFirst().split(separator: "/", omittingEmptySubsequences: false)
+        guard components.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }) else {
+            throw POSIXError(.EINVAL)
+        }
+        var parent = open("/", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard parent >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        defer { if parent >= 0 { close(parent) } }
+        for component in components.map(String.init) + [".claude", "projects"] {
+            guard let child = try Self.openDirectory(component, relativeTo: parent) else { return nil }
+            close(parent)
+            parent = child
+        }
+        descriptor = parent
+        parent = -1
     }
 
     deinit { close(descriptor) }
@@ -20,7 +38,31 @@ final class CaptureArtifactDirectory {
         guard !name.isEmpty, name != ".", name != "..", !name.contains("/"), !name.utf8.contains(0) else {
             throw POSIXError(.EINVAL)
         }
-        try name.withCString { try Self.removeEntry($0, relativeTo: descriptor) }
+        guard let root = try Self.openEntry(Array(name.utf8CString), relativeTo: descriptor) else { return }
+        var stack = [root]
+        while let directory = stack.last {
+            errno = 0
+            guard let entry = readdir(directory.stream) else {
+                guard errno == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+                try directory.name.withUnsafeBufferPointer {
+                    guard unlinkat(directory.parent, $0.baseAddress!, AT_REMOVEDIR) == 0 || errno == ENOENT else {
+                        throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+                    }
+                }
+                stack.removeLast()
+                continue
+            }
+            let capacity = Int(entry.pointee.d_namlen) + 1
+            let name: [CChar]? = withUnsafePointer(to: &entry.pointee.d_name) {
+                $0.withMemoryRebound(to: CChar.self, capacity: capacity) { name in
+                    guard strcmp(name, ".") != 0, strcmp(name, "..") != 0 else { return nil }
+                    return Array(UnsafeBufferPointer(start: name, count: capacity))
+                }
+            }
+            guard let name, let child = try Self.openEntry(name, relativeTo: dirfd(directory.stream)) else { continue }
+            guard stack.count < 256 else { throw POSIXError(.ELOOP) }
+            stack.append(child)
+        }
     }
 
     private static func openDirectory(_ path: String, relativeTo parent: Int32) throws -> Int32? {
@@ -32,40 +74,41 @@ final class CaptureArtifactDirectory {
         return descriptor
     }
 
-    private static func removeEntry(_ name: UnsafePointer<CChar>, relativeTo parent: Int32) throws {
-        let descriptor = openat(parent, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+    private static func openEntry(_ name: [CChar], relativeTo parent: Int32) throws -> Directory? {
+        try name.withUnsafeBufferPointer { try openEntry($0.baseAddress!, name: name, relativeTo: parent) }
+    }
+
+    private static func openEntry(_ pointer: UnsafePointer<CChar>, name: [CChar], relativeTo parent: Int32) throws -> Directory? {
+        let descriptor = openat(parent, pointer, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         guard descriptor >= 0 else {
-            if errno == ENOENT { return }
+            if errno == ENOENT { return nil }
             guard errno == ENOTDIR || errno == ELOOP else {
                 throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
             }
-            guard unlinkat(parent, name, 0) == 0 || errno == ENOENT else {
+            guard unlinkat(parent, pointer, 0) == 0 || errno == ENOENT else {
                 throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
             }
-            return
+            return nil
         }
         guard let directory = fdopendir(descriptor) else {
             let error = POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
             close(descriptor)
             throw error
         }
-        defer { closedir(directory) }
-        while true {
-            errno = 0
-            guard let entry = readdir(directory) else {
-                guard errno == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
-                break
-            }
-            let capacity = Int(entry.pointee.d_namlen) + 1
-            try withUnsafePointer(to: &entry.pointee.d_name) {
-                try $0.withMemoryRebound(to: CChar.self, capacity: capacity) { name in
-                    guard strcmp(name, ".") != 0, strcmp(name, "..") != 0 else { return }
-                    try removeEntry(name, relativeTo: descriptor)
-                }
-            }
+        return Directory(stream: directory, parent: parent, name: name)
+    }
+
+    private final class Directory {
+        let stream: UnsafeMutablePointer<DIR>
+        let parent: Int32
+        let name: [CChar]
+
+        init(stream: UnsafeMutablePointer<DIR>, parent: Int32, name: [CChar]) {
+            self.stream = stream
+            self.parent = parent
+            self.name = name
         }
-        guard unlinkat(parent, name, AT_REMOVEDIR) == 0 || errno == ENOENT else {
-            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
-        }
+
+        deinit { closedir(stream) }
     }
 }

@@ -39,6 +39,7 @@ public actor PromptCapture {
             var process: (any CaptureProcessHandle)?
             var workingDirectory: CaptureWorkingDirectory?
             var home = NSHomeDirectory()
+            var canonicalHome: Result<String, Error>?
             do {
                 try Task.checkCancellation()
                 let executable = await resolveTool(adapter.tool)
@@ -57,6 +58,9 @@ public actor PromptCapture {
                     atPath: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700]
                 )
                 workingDirectory = try CaptureWorkingDirectory(path: directory, id: directoryID)
+                if adapter.harness == .claude {
+                    canonicalHome = Result { try CaptureArtifactDirectory.canonicalHome(home) }
+                }
                 let command = [executable] + launch.arguments
                 let argv = try CaptureSandbox.wrap(command, port: port, unixSockets: adapter.unixSockets)
                 try Task.checkCancellation()
@@ -65,7 +69,7 @@ public actor PromptCapture {
                 let requests = await collect(listener: listener, process: handle, sentinel: sentinel, stop: stop)
                 let cleanupNotes = try await cleanUp(
                     process: handle, listener: listener, directory: directory, workingDirectory: workingDirectory,
-                    adapter: adapter, home: home, sentinel: sentinel
+                    adapter: adapter, home: home, canonicalHome: canonicalHome, sentinel: sentinel
                 )
                 process = nil
                 try Task.checkCancellation()
@@ -89,7 +93,7 @@ public actor PromptCapture {
             } catch {
                 _ = try await cleanUp(
                     process: process, listener: listener, directory: directory, workingDirectory: workingDirectory,
-                    adapter: adapter, home: home, sentinel: sentinel
+                    adapter: adapter, home: home, canonicalHome: canonicalHome, sentinel: sentinel
                 )
                 try Task.checkCancellation()
                 throw error
@@ -139,7 +143,8 @@ public actor PromptCapture {
 
     private func cleanUp(
         process: (any CaptureProcessHandle)?, listener: CaptureListener, directory: String,
-        workingDirectory: CaptureWorkingDirectory?, adapter: CaptureAdapter, home: String, sentinel: String
+        workingDirectory: CaptureWorkingDirectory?, adapter: CaptureAdapter, home: String,
+        canonicalHome: Result<String, Error>?, sentinel: String
     ) async throws -> [String] {
         if let process {
             await process.terminate()
@@ -153,7 +158,8 @@ public actor PromptCapture {
             guard !paths.isEmpty else { return [] }
             let projects: CaptureArtifactDirectory?
             do {
-                projects = try CaptureArtifactDirectory(home: home)
+                guard let canonicalHome else { throw POSIXError(.EINVAL) }
+                projects = try CaptureArtifactDirectory(home: canonicalHome.get())
             } catch {
                 return ["Session artifact cleanup skipped: .claude/projects could not be opened safely. \(error.localizedDescription)"]
             }

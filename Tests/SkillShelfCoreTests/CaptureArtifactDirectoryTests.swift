@@ -4,6 +4,86 @@ import Testing
 @testable import SkillShelfCore
 
 struct CaptureArtifactDirectoryTests {
+    @Test(arguments: ["home", "ancestor"], ["", "/", "/.", "//"])
+    func cleanupRefusesSymlinksAnywhereInHomePath(component: String, suffix: String) throws {
+        let dir = try TempDir()
+        defer { dir.remove() }
+        let target = dir.path + "/unrelated"
+        let home = dir.path + "/home"
+        let targetHome = target + (component == "ancestor" ? "/nested" : "")
+        let transcript = targetHome + "/.claude/projects/capture/session.jsonl"
+        try FileManager.default.createDirectory(
+            atPath: targetHome + "/.claude/projects/capture", withIntermediateDirectories: true
+        )
+        try "history".write(toFile: transcript, atomically: true, encoding: .utf8)
+        try FileManager.default.createSymbolicLink(atPath: home, withDestinationPath: target)
+        let path = home + (component == "ancestor" ? "/nested" : "") + suffix
+        #expect(throws: POSIXError.self) {
+            let cleanup = try #require(try CaptureArtifactDirectory(home: path))
+            try cleanup.removeProject(named: "capture")
+        }
+        #expect((try? String(contentsOfFile: transcript, encoding: .utf8)) == "history")
+    }
+
+    @Test(arguments: [1, 256, 257])
+    func cleanupBoundsDeepTreesOffMainThread(depth: Int) async throws {
+        try await Task.detached {
+            #expect(pthread_main_np() == 0)
+            let dir = try TempDir()
+            defer { dir.remove() }
+            let project = dir.path + "/.claude/projects/capture"
+            try FileManager.default.createDirectory(atPath: project, withIntermediateDirectories: true)
+            var leaf = open(project, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            guard leaf >= 0 else { throw POSIXError(.EIO) }
+            var created = 1
+            var removed = false
+            defer {
+                if !removed {
+                    for _ in 1..<created {
+                        let parent = openat(leaf, "..", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+                        if parent < 0 { break }
+                        #expect(unlinkat(parent, "d", AT_REMOVEDIR) == 0)
+                        close(leaf)
+                        leaf = parent
+                    }
+                }
+                close(leaf)
+            }
+            for _ in 1..<depth {
+                guard mkdirat(leaf, "d", 0o700) == 0 else { throw POSIXError(.EIO) }
+                let child = openat(leaf, "d", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+                guard child >= 0 else { throw POSIXError(.EIO) }
+                close(leaf)
+                leaf = child
+                created += 1
+            }
+            let cleanup = try #require(try CaptureArtifactDirectory(home: dir.path))
+            do {
+                try cleanup.removeProject(named: "capture")
+                removed = true
+                #expect(depth <= 256)
+                #expect(!FileManager.default.fileExists(atPath: project))
+            } catch let error as POSIXError {
+                #expect(depth > 256)
+                #expect(error.code == .ELOOP)
+                #expect(FileManager.default.fileExists(atPath: project))
+            }
+        }.value
+    }
+
+    @Test func cleanupRemovesUnicodeEntryNames() throws {
+        let dir = try TempDir()
+        defer { dir.remove() }
+        let project = dir.path + "/.claude/projects/capture"
+        try FileManager.default.createDirectory(atPath: project, withIntermediateDirectories: true)
+        let nested = project + "/" + String(repeating: "世", count: 80)
+        try FileManager.default.createDirectory(atPath: nested, withIntermediateDirectories: true)
+        try "capture".write(toFile: nested + "/café.jsonl", atomically: true, encoding: .utf8)
+        let cleanup = try #require(try CaptureArtifactDirectory(home: dir.path))
+        try cleanup.removeProject(named: "capture")
+        #expect(!FileManager.default.fileExists(atPath: project))
+    }
+
     @Test(arguments: [".claude", ".claude/projects"])
     func pinnedCleanupSurvivesAncestorSwap(ancestor: String) throws {
         let dir = try TempDir()
