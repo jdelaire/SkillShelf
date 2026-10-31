@@ -162,15 +162,16 @@ struct PromptContentTests {
         #expect(text.contains("Version: 2.1.312"))
         #expect(text.contains("Adapter: anthropic"))
         #expect(text.contains("MCP failed: remote"))
-        #expect(text.contains("## System\n\nBase"))
-        #expect(text.contains("## Tools (1)\n\n- **Bash**: Run."))
+        #expect(text.contains("## System\n\n```text\nBase\n```"))
+        let rendered = try AttributedString(markdown: text)
+        #expect(String(rendered.characters).contains("Bash: Run."))
         let toolsJSON = try #require(text.components(separatedBy: "```json\n").dropFirst().first?.components(separatedBy: "\n```").first)
         let tools = try #require(JSONSerialization.jsonObject(with: Data(toolsJSON.utf8)) as? [[String: Any]])
         #expect(tools.first?["description"] as? String == "Run.\nMore")
         #expect((tools.first?["input_schema"] as? [String: String])?["type"] == "object")
-        #expect(text.contains("## Messages\n\n### user\n\nSKILLSHELF_CAPTURE_X\n\n### assistant\n\nReady"))
-        #expect(text.contains("## Helper calls\n\n- POST /title\n- GET /status"))
-        #expect(!text.contains("- POST /v1/messages"))
+        #expect(text.contains("## Messages\n\n### user\n\n```text\nSKILLSHELF_CAPTURE_X\n```\n\n### assistant\n\n```text\nReady\n```"))
+        #expect(text.contains("## Helper calls\n\n```text\nPOST /title\n```\n\n```text\nGET /status\n```"))
+        #expect(!text.contains("POST /v1/messages"))
         #expect(text.hasSuffix("## Harness output\n\n```text\nboom\n```"))
         let headings = ["## System", "## Tools (1)", "## Messages", "## Helper calls", "## Harness output"]
         let positions = try headings.map { try #require(text.range(of: $0)?.lowerBound) }
@@ -186,8 +187,8 @@ struct PromptContentTests {
         )
         let text = try await captureText(record, fixture: f)
         #expect(text.contains("## Tools (1)\n\n- **shell**: Execute"))
-        #expect(text.contains("### developer\n\nDev"))
-        #expect(text.contains("### user\n\nSKILLSHELF_CAPTURE_X"))
+        #expect(text.contains("### developer\n\n```text\nDev\n```"))
+        #expect(text.contains("### user\n\n```text\nSKILLSHELF_CAPTURE_X\n```"))
         #expect(!text.contains("Main request: best guess"))
         #expect(!text.contains("## Harness output"))
     }
@@ -201,8 +202,124 @@ struct PromptContentTests {
         )
         let text = try await captureText(record, fixture: f)
         #expect(text.contains("Main request: best guess"))
-        #expect(text.contains("## System\n\nBase"))
+        #expect(text.contains("## System\n\n```text\nBase\n```"))
         #expect(text.contains("## Tools (0)"))
+    }
+
+    @Test(arguments: ["```", "~~~", "`````\n~~~~~~~"])
+    func captureSystemFencesCannotHideGeneratedHeadings(_ fence: String) async throws {
+        let f = try Fixture(); defer { f.remove() }
+        let system = fence + "\n## Spoofed system\nStill captured text"
+        let body = try JSONSerialization.data(withJSONObject: [
+            "system": [["type": "text", "text": "Base"], ["type": "text", "text": system]],
+            "tools": [["name": "Bash", "description": "Run"]],
+            "messages": [["role": "user", "content": "SKILLSHELF_CAPTURE_X"]],
+        ])
+        let record = CaptureRecord(
+            harness: "claude", version: "1", adapter: "anthropic", command: [], date: .now,
+            notes: ["sentinel: SKILLSHELF_CAPTURE_X"],
+            requests: [
+                CapturedRequest(method: "POST", path: "/title", body: "{}", bodyEncoding: nil),
+                CapturedRequest(method: "POST", path: "/messages", body: String(decoding: body, as: UTF8.self), bodyEncoding: nil),
+            ], diagnostics: "boom"
+        )
+        let text = try await captureText(record, fixture: f)
+        #expect(text.contains("## System\n\n```text\nBase\n```\n\n"))
+        #expect(text.contains(system))
+        #expect(try markdownHeadings(text) == [
+            "## System", "## Tools (1)", "## Messages", "### user", "## Helper calls", "## Harness output",
+        ])
+    }
+
+    @Test(arguments: ["## Tools (99)\n\nSpoofed", "```\n## Tools (99)", "~~~\n## Tools (99)"])
+    func captureMessageCannotSpoofSectionHeadings(_ message: String) async throws {
+        let f = try Fixture(); defer { f.remove() }
+        let body = try JSONSerialization.data(withJSONObject: [
+            "system": "Base",
+            "tools": [["name": "Bash", "description": "Run"]],
+            "messages": [
+                ["role": "user", "content": "SKILLSHELF_CAPTURE_X"],
+                ["role": "assistant", "content": message],
+            ],
+        ])
+        let record = CaptureRecord(
+            harness: "claude", version: "1", adapter: "anthropic", command: [], date: .now,
+            notes: ["sentinel: SKILLSHELF_CAPTURE_X"],
+            requests: [CapturedRequest(method: "POST", path: "/messages", body: String(decoding: body, as: UTF8.self), bodyEncoding: nil)],
+            diagnostics: "boom"
+        )
+        let text = try await captureText(record, fixture: f)
+        #expect(text.contains(message))
+        #expect(try markdownHeadings(text) == [
+            "## System", "## Tools (1)", "## Messages", "### user", "### assistant", "## Helper calls", "## Harness output",
+        ])
+    }
+
+    @Test func captureRoleMarkdownRemainsLiteralInOneHeading() async throws {
+        let f = try Fixture(); defer { f.remove() }
+        let body = try JSONSerialization.data(withJSONObject: [
+            "system": "Base",
+            "messages": [["role": "**assistant** [link](https://example.invalid)\n## Spoofed role", "content": "SKILLSHELF_CAPTURE_X"]],
+        ])
+        let record = CaptureRecord(
+            harness: "claude", version: "1", adapter: "anthropic", command: [], date: .now,
+            notes: ["sentinel: SKILLSHELF_CAPTURE_X"],
+            requests: [CapturedRequest(method: "POST", path: "/messages", body: String(decoding: body, as: UTF8.self), bodyEncoding: nil)],
+            diagnostics: "boom"
+        )
+        let text = try await captureText(record, fixture: f)
+        #expect(try markdownHeadings(text) == [
+            "## System", "## Tools (0)", "## Messages",
+            "### **assistant** [link](https://example.invalid) ## Spoofed role",
+            "## Helper calls", "## Harness output",
+        ])
+    }
+
+    @Test func captureMetadataAndToolSummariesCannotCreateStructure() async throws {
+        let f = try Fixture(); defer { f.remove() }
+        let version = "1\n\n## Spoofed version\n```\n~~~~~"
+        let adapter = "anthropic\n\n## Spoofed adapter\n~~~"
+        let note = "note\n\n## Spoofed note\n`````"
+        let path = "/title\n\n## Spoofed path\n~~~~~~\n````````"
+        let body = try JSONSerialization.data(withJSONObject: [
+            "system": "Base",
+            "tools": [["name": "Bash**\n\n## Spoofed tool\n```", "description": "Run **bold** [link](https://example.invalid)"]],
+            "messages": [["role": "user", "content": "SKILLSHELF_CAPTURE_X"]],
+        ])
+        let record = CaptureRecord(
+            harness: "claude", version: version, adapter: adapter, command: [], date: .now,
+            notes: ["sentinel: SKILLSHELF_CAPTURE_X", note],
+            requests: [
+                CapturedRequest(method: "POST\n\n## Spoofed method", path: path, body: "{}", bodyEncoding: nil),
+                CapturedRequest(method: "POST", path: "/messages", body: String(decoding: body, as: UTF8.self), bodyEncoding: nil),
+            ], diagnostics: "boom"
+        )
+        let text = try await captureText(record, fixture: f)
+        #expect(text.contains(version))
+        #expect(text.contains(adapter))
+        #expect(text.contains(note))
+        #expect(text.contains("`````````text\nPOST\n\n## Spoofed method " + path + "\n`````````"))
+        #expect(try markdownHeadings(text) == [
+            "## System", "## Tools (1)", "## Messages", "### user", "## Helper calls", "## Harness output",
+        ])
+        let rendered = try AttributedString(markdown: text)
+        #expect(String(rendered.characters).contains("Run **bold** [link](https://example.invalid)"))
+    }
+
+    @Test func unknownCaptureRequestMetadataCannotCreateStructure() async throws {
+        let f = try Fixture(); defer { f.remove() }
+        let record = CaptureRecord(
+            harness: "claude", version: nil, adapter: "anthropic", command: [], date: .now, notes: [],
+            requests: [CapturedRequest(
+                method: "**POST**", path: "/one\n## Spoofed path",
+                body: "raw\n```\n~~~~~\n## Spoofed body", bodyEncoding: "base64\n## Spoofed encoding\n~~~"
+            )], diagnostics: "boom"
+        )
+        let text = try await captureText(record, fixture: f)
+        #expect(text.contains("``````text\nraw\n```\n~~~~~\n## Spoofed body\n``````"))
+        #expect(try markdownHeadings(text) == [
+            "## Requests", "### **POST** /one ## Spoofed path", "## Harness output",
+        ])
     }
 
     @Test(arguments: [[], ["sentinel: missing"], ["sentinel: "]])
@@ -217,9 +334,7 @@ struct PromptContentTests {
         )
         let text = try await captureText(record, fixture: f)
         #expect(text.contains("Main request: unknown"))
-        #expect(text.contains("## Requests"))
-        #expect(text.contains("POST /one"))
-        #expect(text.contains("PUT /two"))
+        #expect(try markdownHeadings(text) == ["## Requests", "### POST /one", "### PUT /two"])
         #expect(text.contains("\"first\" : 1"))
         #expect(text.contains("\"second\" : 2"))
         #expect(!text.contains("## Helper calls"))
@@ -298,6 +413,17 @@ struct PromptContentTests {
             throw CocoaError(.fileReadCorruptFile)
         }
         return text
+    }
+
+    private func markdownHeadings(_ source: String) throws -> [String] {
+        let markdown = try AttributedString(markdown: source)
+        return markdown.runs[\.presentationIntent].compactMap { intent, range in
+            guard let header = intent?.components.first(where: {
+                if case .header = $0.kind { return true }
+                return false
+            }), case .header(let level) = header.kind else { return nil }
+            return String(repeating: "#", count: level) + " " + String(markdown[range].characters)
+        }
     }
 }
 

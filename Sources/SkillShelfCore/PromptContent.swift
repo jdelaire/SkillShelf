@@ -139,8 +139,11 @@ public enum PromptContent {
     }
 
     private static func captureText(_ record: CaptureRecord) -> String {
-        var blocks = ["Version: \(record.version ?? "Unknown")\nAdapter: \(record.adapter)"]
-        if !record.notes.isEmpty { blocks.append(record.notes.map { "- " + $0 }.joined(separator: "\n")) }
+        var blocks = [
+            fenced("Version: \(record.version ?? "Unknown")", language: "text"),
+            fenced("Adapter: \(record.adapter)", language: "text"),
+        ]
+        blocks += record.notes.map { fenced($0, language: "text") }
         let sentinel = record.notes.first { $0.hasPrefix("sentinel: ") }.map { String($0.dropFirst("sentinel: ".count)) }
         let main = sentinel.flatMap { $0.isEmpty ? nil : CaptureParser.mainRequest(record.requests, sentinel: $0) } ?? .unknown
         switch main {
@@ -150,24 +153,26 @@ public enum PromptContent {
             if let raw = sections.raw {
                 blocks.append(fenced(raw, language: "json"))
             } else {
-                blocks.append("## System\n\n" + sections.system.joined(separator: "\n\n"))
+                blocks.append("## System")
+                blocks += sections.system.map { fenced($0, language: "text") }
                 blocks.append("## Tools (\(sections.tools.count))")
                 if !sections.tools.isEmpty {
-                    blocks.append(sections.tools.map { "- **\($0.name)**: \($0.summary)" }.joined(separator: "\n"))
+                    blocks.append(sections.tools.map { "- **\(escapedMetadata($0.name))**: \(escapedMetadata($0.summary))" }.joined(separator: "\n"))
                 }
                 if let json = sections.toolsJSON { blocks.append(fenced(json, language: "json")) }
                 blocks.append("## Messages")
-                blocks += sections.messages.map { "### \($0.role)\n\n\($0.text)" }
+                blocks += sections.messages.map { "### \(escapedMetadata($0.role))\n\n" + fenced($0.text, language: "text") }
             }
             blocks.append("## Helper calls")
-            let helpers = record.requests.enumerated().filter { $0.offset != index }.map { "- \($0.element.method) \($0.element.path)" }
-            if !helpers.isEmpty { blocks.append(helpers.joined(separator: "\n")) }
+            blocks += record.requests.enumerated().filter { $0.offset != index }.map {
+                fenced("\($0.element.method) \($0.element.path)", language: "text")
+            }
         case .unknown:
             blocks.append("Main request: unknown")
             blocks.append("## Requests")
             for request in record.requests {
-                blocks.append("### \(request.method) \(request.path)")
-                if let encoding = request.bodyEncoding { blocks.append("Body encoding: " + encoding) }
+                blocks.append("### \(escapedMetadata(request.method)) \(escapedMetadata(request.path))")
+                if let encoding = request.bodyEncoding { blocks.append(fenced("Body encoding: " + encoding, language: "text")) }
                 let value = try? JSONSerialization.jsonObject(with: Data(request.body.utf8), options: .fragmentsAllowed)
                 let body = value.flatMap { try? jsonText($0) } ?? request.body
                 blocks.append(fenced(body, language: request.bodyEncoding == nil ? "json" : "text"))
@@ -185,12 +190,30 @@ public enum PromptContent {
         return String(decoding: data, as: UTF8.self)
     }
 
+    private static func escapedMetadata(_ text: String) -> String {
+        var escaped = ""
+        for scalar in text.unicodeScalars {
+            if CharacterSet.newlines.contains(scalar) {
+                escaped.append(" ")
+            } else {
+                switch scalar.value {
+                case 33...47, 58...64, 91...96, 123...126: escaped.append("\\")
+                default: break
+                }
+                escaped.unicodeScalars.append(scalar)
+            }
+        }
+        return escaped
+    }
+
     private static func fenced(_ text: String, language: String) -> String {
         var longest = 0
         var count = 0
-        for character in text {
-            count = character == "`" ? count + 1 : 0
+        var previous: UInt8 = 0
+        for byte in text.utf8 {
+            count = byte == 96 || byte == 126 ? (byte == previous ? count + 1 : 1) : 0
             longest = max(longest, count)
+            previous = byte
         }
         let fence = String(repeating: "`", count: max(3, longest + 1))
         return fence + language + "\n" + text + "\n" + fence
