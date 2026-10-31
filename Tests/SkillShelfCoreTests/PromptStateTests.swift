@@ -58,13 +58,13 @@ struct PromptStateTests {
         _ = await started.next()
         guard case .loading = state.base[.codex] else {
             await runner.release()
-            await older.value
+            _ = await older.value
             Issue.record("Expected initial loading state")
             return
         }
         await state.loadBase(.codex)
         await runner.release()
-        await older.value
+        _ = await older.value
 
         #expect(state.parts(for: .codex).first?.version == "0.165.0")
     }
@@ -96,6 +96,56 @@ struct PromptStateTests {
             return
         }
         #expect(try CaptureRecord.load(path).requests.count == 1)
+    }
+
+    @Test(arguments: [false, true])
+    func capturePersistsOwnVersionWhileNewerBaseLoadIsPending(previouslyLoaded: Bool) async throws {
+        let f = try Fixture(installed: [.claude]); defer { f.remove() }
+        let runner = OverlappingBaseGateRunner()
+        let engine = PromptCapture(
+            launcher: LocalCaptureLauncher(), resolveTool: { _ in "/fake/claude" },
+            loginEnvironment: { ["HOME": f.home] },
+            capturesRoot: f.layout.path("captures"), tempRoot: f.layout.path("temp")
+        )
+        let state = PromptState(
+            layout: f.layout, runner: runner, fetcher: FailingFetcher(),
+            cacheRoot: f.layout.path("cache"), capturesRoot: f.layout.path("captures"),
+            environment: [:], capture: engine
+        )
+        if previouslyLoaded {
+            state.base[.claude] = .loaded(BasePrompts(version: "2.1.311", parts: []))
+        }
+        var started = runner.started.makeAsyncIterator()
+        let capture = Task { await state.capture(.claude) }
+        #expect(await started.next() == 1)
+        let newer = Task { await state.loadBase(.claude) }
+        #expect(await started.next() == 2)
+
+        await runner.release(1, version: "2.1.312")
+        await capture.value
+
+        switch state.base[.claude] {
+        case .loading:
+            #expect(!previouslyLoaded)
+        case .loaded(let loaded):
+            #expect(previouslyLoaded)
+            #expect(loaded.version == "2.1.311")
+        case nil:
+            Issue.record("Expected pending base load")
+        }
+        await runner.release(2, version: "2.1.313")
+        _ = await newer.value
+
+        #expect(state.captureError[.claude] == nil)
+        #expect(state.capturing == nil)
+        #expect(state.parts(for: .claude).first?.version == "2.1.313")
+        let part = try #require(state.captures[.claude]?.first)
+        #expect(part.version == "2.1.312")
+        guard case .capture(let path) = part.source else {
+            Issue.record("Expected saved capture source")
+            return
+        }
+        #expect(try CaptureRecord.load(path).version == "2.1.312")
     }
 
     @Test func captureReportsUnavailableAndMissingToolsAndPreventsOverlap() async throws {
@@ -271,6 +321,30 @@ private actor BaseGateRunner: CommandRunning {
         releaseWaiter?.resume()
         releaseWaiter = nil
         continuation.finish()
+    }
+}
+
+private actor OverlappingBaseGateRunner: CommandRunning {
+    nonisolated let started: AsyncStream<Int>
+    private let continuation: AsyncStream<Int>.Continuation
+    private var releaseWaiters: [Int: CheckedContinuation<CommandResult, Never>] = [:]
+    private var calls = 0
+
+    init() {
+        (started, continuation) = AsyncStream.makeStream()
+    }
+
+    func run(_ tool: String, _ arguments: [String]) async throws -> CommandResult {
+        calls += 1
+        let call = calls
+        return await withCheckedContinuation {
+            releaseWaiters[call] = $0
+            continuation.yield(call)
+        }
+    }
+
+    func release(_ call: Int, version: String) {
+        releaseWaiters.removeValue(forKey: call)?.resume(returning: CommandResult(status: 0, output: version, error: ""))
     }
 }
 

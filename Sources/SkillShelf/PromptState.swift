@@ -53,7 +53,8 @@ final class PromptState {
         )
     }
 
-    func loadBase(_ harness: HarnessID, force: Bool = false) async {
+    @discardableResult
+    func loadBase(_ harness: HarnessID, force: Bool = false) async -> BasePrompts {
         let current = baseGenerations[harness, default: 0] + 1
         baseGenerations[harness] = current
         let previous: BasePrompts?
@@ -67,8 +68,10 @@ final class PromptState {
             harness: harness, layout: layout, runner: runner, fetcher: fetcher, cacheRoot: cacheRoot,
             environment: environment, reusing: previous, force: force
         )
-        guard baseGenerations[harness] == current else { return }
-        base[harness] = .loaded(result)
+        if baseGenerations[harness] == current {
+            base[harness] = .loaded(result)
+        }
+        return result
     }
 
     func loadCaptures(_ harness: HarnessID) async {
@@ -91,11 +94,9 @@ final class PromptState {
             capturing = nil
             contentGeneration += 1
         }
-        await loadBase(harness)
-        let version: String?
-        if case .loaded(let loaded) = base[harness] { version = loaded.version } else { version = nil }
+        let loaded = await loadBase(harness)
         do {
-            _ = try await captureRunner.run(adapter, version: version)
+            _ = try await captureRunner.run(adapter, version: loaded.version)
         } catch {
             captureError[harness] = error.localizedDescription
         }
