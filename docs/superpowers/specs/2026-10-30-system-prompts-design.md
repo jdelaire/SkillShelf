@@ -138,6 +138,7 @@ Run:
    - Framing: `Content-Length` and `chunked`. Headers are parsed in memory for framing only and never stored or logged.
    - `Content-Encoding` other than identity: the body is stored base64-encoded with a "compressed body (<encoding>), not decoded" note.
    - WebSocket upgrades are refused.
+   - Only `POST` requests are recorded. Other methods get the same response and are dropped, because local tools such as T3 Code probe every new loopback port with `GET /`.
    - Response: `400` with a body in the adapter's error format, `{"type":"error","error":{"type":"invalid_request_error","message":"SkillShelf capture"}}` for Anthropic and `{"error":{"type":"invalid_request_error","code":"skillshelf_capture","message":"SkillShelf capture"}}` for OpenAI-style. The message avoids words that clients treat as retryable.
 7. Stop: as soon as a request body contains the sentinel and a non-empty tools list, the process group is terminated. Otherwise the capture stops when the process exits or after 60 s.
 8. Cleanup, always awaited, also on cancellation through `withTaskCancellationHandler`: terminate the process group, wait for exit, close the listener and every connection, remove the temp directory.

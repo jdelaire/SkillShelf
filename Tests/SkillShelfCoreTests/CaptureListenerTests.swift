@@ -155,6 +155,18 @@ struct CaptureListenerTests {
         }
     }
 
+    @Test func portProbesAreAnsweredButNeverRecorded() async throws {
+        try await withListener(.openAI) { listener, port in
+            let probe = try await rawExchange(port: port, data: Data("GET / HTTP/1.1\r\nHost: localhost\r\nUser-Agent: node\r\n\r\n".utf8))
+            #expect(probe.hasPrefix("HTTP/1.1 400 Bad Request\r\n"))
+            let post = try await rawExchange(port: port, data: Data("POST /v1/responses HTTP/1.1\r\nContent-Length: 2\r\n\r\n{}".utf8))
+            #expect(post.hasPrefix("HTTP/1.1 400 Bad Request\r\n"))
+            await listener.stop()
+            #expect(await collectedRequests(listener) == [CapturedRequest(method: "POST", path: "/v1/responses", body: "{}", bodyEncoding: nil)])
+            #expect(listener.notes().isEmpty)
+        }
+    }
+
     @Test func requestAndTotalLimitsDropExtras() async throws {
         try await withListener(.openAI, limits: CaptureLimits(totalBodyBytes: 10, requests: 2)) { listener, port in
             for _ in 0..<4 {

@@ -227,6 +227,8 @@ public final class CaptureListener: Sendable {
                 state.bodyBytes += count
                 if let result {
                     switch result {
+                    case .request(let method, _, _, _) where method != "POST":
+                        break
                     case .request(let method, let path, let body, let encoding):
                         if let encoding { state.note("Compressed body (\(encoding)), not decoded") }
                         continuation.yield(CapturedRequest(
