@@ -22,10 +22,15 @@ struct FailingFetcher: PromptFetching {
 
 actor CountingFetcher: PromptFetching {
     private(set) var count = 0
+    let response: Data
+
+    init(_ response: String = "") {
+        self.response = Data(response.utf8)
+    }
 
     func data(from url: URL) async throws -> Data {
         count += 1
-        return Data()
+        return response
     }
 }
 
